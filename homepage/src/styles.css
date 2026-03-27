@@ -833,6 +833,24 @@ html, body {
   margin-top: 10px;
 }
 
+.auth-shell__button {
+  margin-top: 16px;
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.auth-shell__button:hover {
+  background: var(--accent-hover);
+}
+
 @keyframes marker-pop {
   0% { transform: scale(0); opacity: 0; }
   60% { transform: scale(1.3); opacity: 1; }

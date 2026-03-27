@@ -6,6 +6,11 @@ It exposes these endpoints:
 
   GET  /api/investigate?q=<query>  →  SSE stream of AgentStep events
   GET  /api/health                 →  Health check / readiness probe
+  GET  /api/investigations         →  List saved investigations
+  POST /api/investigations         →  Save a new investigation
+  GET  /api/investigations/<id>    →  Get a specific investigation
+  PATCH /api/investigations/<id>   →  Update investigation outcome
+  GET  /api/pattern-confidence     →  Historical pattern confidence stats
   POST /api/tips                   →  Submit an anonymous tip (returns one-time token)
   GET  /api/tips/<token>           →  Retrieve a tip by one-time token (burns token)
   OPTIONS /api/*                   →  CORS preflight responses
@@ -38,6 +43,14 @@ from urllib.parse import urlparse, parse_qs
 # Load .env before importing the investigator so GEMINI_API_KEY, TURSO_*, etc. are available.
 from dotenv import load_dotenv
 load_dotenv()
+
+from agent.graph_queries import (
+    file_investigation,
+    get_investigation,
+    get_pattern_confidence,
+    list_investigations,
+    update_investigation_outcome,
+)
 
 # ── Backend selection: TrueFoundry gateway or direct Gemini ──────────────
 # If TRUEFOUNDRY_BASE_URL is set in the environment, route all LLM calls
@@ -131,7 +144,7 @@ class InvestigationHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", _cors_origin(origin))
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Max-Age", "86400")  # cache preflight for 24h
         self.end_headers()
@@ -150,6 +163,13 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             self._handle_investigate(parsed)
         elif path == "/api/health":
             self._handle_health()
+        elif path == "/api/investigations":
+            self._handle_list_investigations()
+        elif path.startswith("/api/investigations/"):
+            inv_id = path[len("/api/investigations/"):]
+            self._handle_get_investigation(inv_id)
+        elif path == "/api/pattern-confidence":
+            self._handle_pattern_confidence()
         elif path.startswith("/api/tips/"):
             # GET /api/tips/<token> — retrieve a tip (one-time use)
             token = path[len("/api/tips/"):]
@@ -161,12 +181,25 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             self._handle_static(path or "/")
 
     def do_POST(self):
-        """Route POST requests. Currently handles tip submission."""
+        """Route POST requests."""
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
         if path == "/api/tips":
             self._handle_submit_tip()
+        elif path == "/api/investigations":
+            self._handle_save_investigation()
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def do_PATCH(self):
+        """Route PATCH requests (investigation outcome updates)."""
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path.startswith("/api/investigations/"):
+            inv_id = path[len("/api/investigations/"):]
+            self._handle_update_outcome(inv_id)
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -268,6 +301,84 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             })
         finally:
             conn.close()
+
+    # ── Investigation management endpoints ─────────────────────────────────
+
+    def _handle_list_investigations(self):
+        """Return all saved investigations (most recent first)."""
+        self._send_json(list_investigations())
+
+    def _handle_get_investigation(self, inv_id: str):
+        """Return a single investigation by ID with full findings."""
+        result = get_investigation(inv_id)
+        if not result:
+            self._send_json({"error": "Investigation not found"}, 404)
+            return
+        self._send_json(result)
+
+    def _handle_save_investigation(self):
+        """Save an investigation from the frontend.
+
+        Expects JSON body: {title, summary, entity_ids, findings}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0 or content_length > 500_000:
+            self._send_json({"error": "Invalid content length"}, 400)
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        title = body.get("title", "").strip()
+        summary = body.get("summary", "").strip()
+        entity_ids = body.get("entity_ids", [])
+        findings = body.get("findings", [])
+
+        if not title:
+            self._send_json({"error": "Missing 'title' field"}, 400)
+            return
+
+        result = file_investigation(
+            title=title,
+            summary=summary or "No summary provided.",
+            entity_ids=entity_ids,
+            findings=findings,
+        )
+        self._send_json(result, 201)
+
+    def _handle_update_outcome(self, inv_id: str):
+        """Update the outcome of a saved investigation.
+
+        Expects JSON body: {outcome: "confirmed"|"dead_end"|"ongoing"|"published"}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0 or content_length > 10_000:
+            self._send_json({"error": "Invalid content length"}, 400)
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        outcome = body.get("outcome", "").strip()
+        if not outcome:
+            self._send_json({"error": "Missing 'outcome' field"}, 400)
+            return
+
+        result = update_investigation_outcome(inv_id, outcome)
+        if "error" in result:
+            self._send_json(result, 400)
+            return
+        self._send_json(result)
+
+    def _handle_pattern_confidence(self):
+        """Return historical pattern confidence statistics."""
+        self._send_json(get_pattern_confidence())
 
     def _handle_health(self):
         """Health check endpoint — returns server status and active LLM backend.

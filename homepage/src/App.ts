@@ -6,6 +6,7 @@ import { GlobePanel } from '@/components/GlobePanel';
 import { GraphPanel } from '@/components/GraphPanel';
 import { NarrativePanel } from '@/components/NarrativePanel';
 import { FindingsPanel } from '@/components/FindingsPanel';
+import { InvestigationsPanel } from '@/components/InvestigationsPanel';
 import { h as dom } from '@/utils/dom-utils';
 import { DEMO_INVESTIGATION } from '@/services/mock-data';
 import { streamInvestigation } from '@/services/investigation-stream';
@@ -119,6 +120,7 @@ class DashboardApp {
   private graphPanel: GraphPanel;
   private narrativePanel: NarrativePanel;
   private findingsPanel: FindingsPanel;
+  private investigationsPanel: InvestigationsPanel;
   private auth: DashboardAuthBridge;
   private session: AuthSession;
   private status: InvestigationStatus = 'idle';
@@ -128,6 +130,8 @@ class DashboardApp {
   private connectionCount = 0;
   private patternCount = 0;
   private findings: PatternAlert[] = [];
+  private currentQuery = '';
+  private collectedEntityIds: string[] = [];
 
   private pillEntities: HTMLElement;
   private pillConnections: HTMLElement;
@@ -154,6 +158,10 @@ class DashboardApp {
       <div id="search-area" class="search-area"></div>
 
       <div class="main">
+        <div class="main__sidebar" id="investigations-sidebar">
+          <div id="investigations-area"></div>
+        </div>
+
         <div class="main__left">
           <div id="hero-viz" class="hero-viz">
             <div id="globe-area" class="hero-viz__globe"></div>
@@ -167,7 +175,12 @@ class DashboardApp {
 
         <div class="main__right">
           <div id="timeline-area" class="right-section right-section--timeline"></div>
-          <div id="findings-area" class="right-section right-section--findings"></div>
+          <div id="findings-area" class="right-section right-section--findings">
+            <div id="save-bar" class="save-bar">
+              <button id="save-investigation-btn" class="save-bar__btn" disabled>Save Investigation</button>
+              <span id="save-feedback" class="save-bar__feedback"></span>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -177,9 +190,17 @@ class DashboardApp {
     this.graphPanel = new GraphPanel();
     this.narrativePanel = new NarrativePanel();
     this.findingsPanel = new FindingsPanel(() => void this.publishFindings(), this.session.permissions.canPublish);
+    this.investigationsPanel = new InvestigationsPanel({
+      onLoad: (id) => void this.loadInvestigation(id),
+      onOutcomeChange: (id, outcome) => void this.updateOutcome(id, outcome),
+    });
 
     const searchArea = root.querySelector('#search-area') as HTMLElement;
     this.searchPanel.mount(searchArea);
+
+    const investigationsArea = root.querySelector('#investigations-area') as HTMLElement;
+    this.investigationsPanel.mount(investigationsArea);
+    void this.investigationsPanel.refresh();
 
     const globeArea = root.querySelector('#globe-area') as HTMLElement;
     const graphArea = root.querySelector('#graph-area') as HTMLElement;
@@ -207,6 +228,11 @@ class DashboardApp {
     const findingsArea = root.querySelector('#findings-area') as HTMLElement;
     this.narrativePanel.mount(timelineArea);
     this.findingsPanel.mount(findingsArea);
+
+    // Save investigation button
+    const saveBtn = root.querySelector('#save-investigation-btn') as HTMLButtonElement;
+    const saveFeedback = root.querySelector('#save-feedback') as HTMLElement;
+    saveBtn.addEventListener('click', () => void this.saveInvestigation(saveBtn, saveFeedback));
 
     const pillsContainer = root.querySelector('#stat-pills') as HTMLElement;
     this.pillEntities = this.makePill('Entities', '0');
@@ -243,6 +269,8 @@ class DashboardApp {
     this.aborted = false;
 
     this.setStatus('running');
+    this.currentQuery = query;
+    this.collectedEntityIds = [];
     this.globePanel.clear();
     this.graphPanel.clear();
     this.narrativePanel.clear();
@@ -252,6 +280,7 @@ class DashboardApp {
     this.patternCount = 0;
     this.findings = [];
     this.updatePills();
+    this.updateSaveButton(false);
     this.searchPanel.setDisabled(true);
 
     this.globePanel.flyToSF();
@@ -276,6 +305,7 @@ class DashboardApp {
             this.globePanel.addNodes(step.nodes);
             this.graphPanel.addNodes(step.nodes);
             this.entityCount += step.nodes.length;
+            for (const n of step.nodes) this.collectedEntityIds.push(n.id);
             this.updatePills();
           }
           if (step.edges && step.edges.length > 0) {
@@ -292,6 +322,11 @@ class DashboardApp {
             }
             this.updatePills();
           }
+
+          // US-012: Check for overlapping entities in prior investigations
+          if (step.tool === 'search_entity' && step.nodes && step.nodes.length > 0) {
+            this.checkPriorInvestigations(step.nodes.map(n => n.id));
+          }
         },
         this.abortController.signal,
       );
@@ -306,6 +341,8 @@ class DashboardApp {
 
     if (!this.aborted) {
       this.setStatus('complete');
+      this.updateSaveButton(true);
+      void this.loadPatternConfidence();
     }
     this.searchPanel.setDisabled(false);
     this.findingsPanel.setPublishBusy(false);
@@ -352,6 +389,145 @@ class DashboardApp {
         }
         this.updatePills();
       }
+    }
+  }
+
+  // ── US-013: Save investigation ──────────────────────────────────────
+  private async saveInvestigation(btn: HTMLButtonElement, feedback: HTMLElement): Promise<void> {
+    if (this.findings.length === 0 && this.collectedEntityIds.length === 0) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    feedback.textContent = '';
+
+    try {
+      const res = await fetch('/api/investigations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: this.currentQuery || 'Untitled Investigation',
+          summary: `Investigation of "${this.currentQuery}" — found ${this.entityCount} entities, ${this.connectionCount} connections, ${this.patternCount} patterns.`,
+          entity_ids: [...new Set(this.collectedEntityIds)],
+          findings: this.findings,
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'Failed to save');
+
+      feedback.textContent = `Saved as ${body.investigation_id}`;
+      feedback.style.color = 'var(--green)';
+      void this.investigationsPanel.refresh();
+    } catch (err) {
+      feedback.textContent = err instanceof Error ? err.message : 'Save failed';
+      feedback.style.color = 'var(--red)';
+      btn.disabled = false;
+      btn.textContent = 'Save Investigation';
+    }
+  }
+
+  private updateSaveButton(enabled: boolean): void {
+    const btn = document.getElementById('save-investigation-btn') as HTMLButtonElement | null;
+    const feedback = document.getElementById('save-feedback') as HTMLElement | null;
+    if (btn) {
+      btn.disabled = !enabled;
+      btn.textContent = 'Save Investigation';
+    }
+    if (feedback) {
+      feedback.textContent = '';
+    }
+  }
+
+  // ── US-014: Update investigation outcome ──────────────────────────────
+  private async updateOutcome(id: string, outcome: string): Promise<void> {
+    try {
+      await fetch(`/api/investigations/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome }),
+      });
+    } catch {
+      // Silently fail — the badge already updated optimistically
+    }
+  }
+
+  // ── US-012: Load a prior investigation ────────────────────────────────
+  private async loadInvestigation(id: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/investigations/${id}`);
+      if (!res.ok) return;
+      const inv = await res.json();
+
+      // Show the loaded investigation narrative
+      this.narrativePanel.clear();
+      this.narrativePanel.addStep({
+        tool: 'file_investigation',
+        message: `Loaded saved investigation: "${inv.title}"\n\n${inv.summary}`,
+        delay: 0,
+      }, 0);
+
+      // Show findings if any
+      this.findingsPanel.clear();
+      if (inv.findings && inv.findings.length > 0) {
+        for (const f of inv.findings) {
+          this.findingsPanel.addPattern(f);
+        }
+        this.findings = inv.findings;
+        this.patternCount = inv.findings.length;
+        this.updatePills();
+      }
+    } catch {
+      // Backend unavailable
+    }
+  }
+
+  // ── US-012: Check for overlapping entities in prior investigations ────
+  private checkPriorInvestigations(entityIds: string[]): void {
+    const priorInvestigations = this.investigationsPanel.getInvestigations();
+    if (priorInvestigations.length === 0) return;
+
+    for (const inv of priorInvestigations) {
+      const overlap = inv.entity_ids.filter(id => entityIds.includes(id));
+      if (overlap.length > 0) {
+        this.narrativePanel.addStep({
+          tool: 'check_prior_investigations',
+          message: `Prior investigation "${inv.title}" (${inv.outcome}) also flagged ${overlap.length} of these entities. This entity was previously investigated.`,
+          delay: 0,
+        }, -1);
+        break;  // Only show the first match to avoid noise
+      }
+    }
+  }
+
+  // ── US-015/016: Load pattern confidence from historical outcomes ──────
+  private async loadPatternConfidence(): Promise<void> {
+    if (this.findings.length === 0) return;
+    try {
+      const res = await fetch('/api/pattern-confidence');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.total_investigations_with_outcomes === 0) return;
+
+      // Annotate the narrative with confidence info
+      const lines: string[] = [];
+      for (const finding of this.findings) {
+        const ptype = finding.type;
+        const stats = data.patterns[ptype];
+        if (stats && stats.total_occurrences > 0) {
+          const pct = Math.round(stats.confidence_rate * 100);
+          lines.push(`${ptype.replace(/_/g, ' ')}: ${pct}% confirmation rate (${stats.confirmed}/${stats.total_occurrences} prior cases)`);
+        }
+      }
+
+      if (lines.length > 0) {
+        this.narrativePanel.addStep({
+          tool: 'get_pattern_confidence',
+          message: `Historical pattern confidence from ${data.total_investigations_with_outcomes} prior investigations:\n${lines.join('\n')}`,
+          delay: 0,
+        }, -1);
+      }
+    } catch {
+      // Confidence data unavailable
     }
   }
 

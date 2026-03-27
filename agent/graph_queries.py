@@ -82,10 +82,17 @@ def _connect_investigations() -> sqlite3.Connection:
             entity_ids  TEXT NOT NULL DEFAULT '[]',  -- JSON array of entity_ids
             findings    TEXT NOT NULL DEFAULT '[]',  -- JSON array of finding dicts
             status      TEXT NOT NULL DEFAULT 'draft',  -- draft | published
+            outcome     TEXT NOT NULL DEFAULT 'ongoing',  -- ongoing | confirmed | dead_end | published
             created_at  REAL NOT NULL,
             published_at REAL
         )
     """)
+    # Add outcome column if upgrading from older schema
+    try:
+        conn.execute("ALTER TABLE investigations ADD COLUMN outcome TEXT NOT NULL DEFAULT 'ongoing'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     return conn
 
@@ -662,6 +669,134 @@ def publish_finding(
             "investigation_id": investigation_id,
             "title": public_title or row["title"],
             "message": f"Investigation '{public_title or row['title']}' is now published.",
+        }
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# REST helpers: list, get, update outcome, pattern confidence
+# ──────────────────────────────────────────────────────────────────────────
+
+def list_investigations(limit: int = 50) -> list[dict]:
+    """Return all investigations ordered by most recent first."""
+    conn = _connect_investigations()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, summary, entity_ids, findings, status, outcome, created_at, published_at "
+            "FROM investigations ORDER BY created_at DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "summary": r["summary"][:200] + ("..." if len(r["summary"]) > 200 else ""),
+                "entity_ids": json.loads(r["entity_ids"] or "[]"),
+                "findings_count": len(json.loads(r["findings"] or "[]")),
+                "status": r["status"],
+                "outcome": r["outcome"] or "ongoing",
+                "created_at": r["created_at"],
+                "published_at": r["published_at"],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_investigation(investigation_id: str) -> Optional[dict]:
+    """Get full investigation record by ID."""
+    conn = _connect_investigations()
+    try:
+        row = conn.execute(
+            "SELECT * FROM investigations WHERE id = ?", [investigation_id]
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "entity_ids": json.loads(row["entity_ids"] or "[]"),
+            "findings": json.loads(row["findings"] or "[]"),
+            "status": row["status"],
+            "outcome": row["outcome"] or "ongoing",
+            "created_at": row["created_at"],
+            "published_at": row["published_at"],
+        }
+    finally:
+        conn.close()
+
+
+def update_investigation_outcome(investigation_id: str, outcome: str) -> dict:
+    """Update the outcome status of an investigation.
+
+    Valid outcomes: ongoing, confirmed, dead_end, published
+    """
+    valid = {"ongoing", "confirmed", "dead_end", "published"}
+    if outcome not in valid:
+        return {"error": f"Invalid outcome. Must be one of: {', '.join(sorted(valid))}"}
+
+    conn = _connect_investigations()
+    try:
+        row = conn.execute(
+            "SELECT id FROM investigations WHERE id = ?", [investigation_id]
+        ).fetchone()
+        if not row:
+            return {"error": "Investigation not found"}
+
+        conn.execute(
+            "UPDATE investigations SET outcome = ? WHERE id = ?",
+            [outcome, investigation_id],
+        )
+        conn.commit()
+        return {"id": investigation_id, "outcome": outcome, "status": "updated"}
+    finally:
+        conn.close()
+
+
+def get_pattern_confidence() -> dict:
+    """Calculate pattern confidence from historical investigation outcomes.
+
+    Returns how often each detected pattern type led to a confirmed
+    investigation, based on all prior investigation outcomes.
+    """
+    conn = _connect_investigations()
+    try:
+        rows = conn.execute(
+            "SELECT findings, outcome FROM investigations WHERE outcome != 'ongoing'"
+        ).fetchall()
+
+        pattern_counts: dict[str, int] = {}
+        pattern_confirmed: dict[str, int] = {}
+
+        for row in rows:
+            findings = json.loads(row["findings"] or "[]")
+            outcome = row["outcome"]
+            for f in findings:
+                ptype = f.get("type") or f.get("pattern_type", "unknown")
+                pattern_counts[ptype] = pattern_counts.get(ptype, 0) + 1
+                if outcome == "confirmed":
+                    pattern_confirmed[ptype] = pattern_confirmed.get(ptype, 0) + 1
+
+        confidence = {}
+        for ptype, total in pattern_counts.items():
+            confirmed = pattern_confirmed.get(ptype, 0)
+            confidence[ptype] = {
+                "total_occurrences": total,
+                "confirmed": confirmed,
+                "confidence_rate": round(confirmed / total, 2) if total > 0 else 0,
+            }
+
+        total_investigations = len(rows)
+        total_confirmed = sum(1 for r in rows if r["outcome"] == "confirmed")
+
+        return {
+            "patterns": confidence,
+            "total_investigations_with_outcomes": total_investigations,
+            "total_confirmed": total_confirmed,
+            "overall_confirmation_rate": round(total_confirmed / total_investigations, 2) if total_investigations > 0 else 0,
         }
     finally:
         conn.close()

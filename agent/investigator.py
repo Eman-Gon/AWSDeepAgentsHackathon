@@ -16,7 +16,12 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Generator
+
+# Load .env from project root so GEMINI_API_KEY and other secrets are available
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Overmind SDK — auto-instruments google-genai for observability.
 # Traces every LLM call (latency, tokens, cost) to the Overmind dashboard.

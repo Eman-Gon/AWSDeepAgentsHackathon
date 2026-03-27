@@ -117,9 +117,10 @@ def migrate_via_cli(db_name: str = TURSO_DB_NAME) -> None:
         result = subprocess.run(
             ["turso", "db", "shell", db_name],
             stdin=sql_f,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,  # discard blank per-INSERT lines (prevent pipe deadlock)
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=600,  # 10 min safety timeout
+            timeout=600,
         )
     os.unlink(fpath)
 

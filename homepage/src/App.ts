@@ -5,6 +5,7 @@ import { SearchPanel } from '@/components/SearchPanel';
 import { GlobePanel } from '@/components/GlobePanel';
 import { GraphPanel } from '@/components/GraphPanel';
 import { NarrativePanel } from '@/components/NarrativePanel';
+import { EntitiesPanel } from '@/components/EntitiesPanel';
 import { FindingsPanel } from '@/components/FindingsPanel';
 import { h as dom } from '@/utils/dom-utils';
 import { DEMO_INVESTIGATION } from '@/services/mock-data';
@@ -152,7 +153,7 @@ function DashboardMount({ auth }: { auth: DashboardAuthBridge }) {
     new DashboardApp(rootRef.current, auth);
   }, [auth]);
 
-  return h('div', { ref: rootRef });
+  return h('div', { ref: rootRef, style: 'display:flex;flex-direction:column;flex:1;min-height:0;height:100%' });
 }
 
 class DashboardApp {
@@ -160,6 +161,7 @@ class DashboardApp {
   private globePanel: GlobePanel;
   private graphPanel: GraphPanel;
   private narrativePanel: NarrativePanel;
+  private entitiesPanel: EntitiesPanel;
   private findingsPanel: FindingsPanel;
   private auth: DashboardAuthBridge;
   private session: AuthSession;
@@ -209,6 +211,7 @@ class DashboardApp {
 
         <div class="main__right">
           <div id="timeline-area" class="right-section right-section--timeline"></div>
+          <div id="entities-area" class="right-section right-section--entities"></div>
           <div id="findings-area" class="right-section right-section--findings"></div>
         </div>
       </div>
@@ -218,6 +221,7 @@ class DashboardApp {
     this.globePanel = new GlobePanel();
     this.graphPanel = new GraphPanel();
     this.narrativePanel = new NarrativePanel();
+    this.entitiesPanel = new EntitiesPanel();
     this.findingsPanel = new FindingsPanel(() => void this.publishFindings(), this.session.permissions.canPublish);
 
     const searchArea = root.querySelector('#search-area') as HTMLElement;
@@ -246,8 +250,10 @@ class DashboardApp {
     });
 
     const timelineArea = root.querySelector('#timeline-area') as HTMLElement;
+    const entitiesArea = root.querySelector('#entities-area') as HTMLElement;
     const findingsArea = root.querySelector('#findings-area') as HTMLElement;
     this.narrativePanel.mount(timelineArea);
+    this.entitiesPanel.mount(entitiesArea);
     this.findingsPanel.mount(findingsArea);
 
     const pillsContainer = root.querySelector('#stat-pills') as HTMLElement;
@@ -288,6 +294,7 @@ class DashboardApp {
     this.globePanel.clear();
     this.graphPanel.clear();
     this.narrativePanel.clear();
+    this.entitiesPanel.clear();
     this.findingsPanel.clear();
     this.entityCount = 0;
     this.connectionCount = 0;
@@ -317,12 +324,14 @@ class DashboardApp {
           if (step.nodes && step.nodes.length > 0) {
             this.globePanel.addNodes(step.nodes);
             this.graphPanel.addNodes(step.nodes);
+            this.entitiesPanel.addNodes(step.nodes);
             this.entityCount += step.nodes.length;
             this.updatePills();
           }
           if (step.edges && step.edges.length > 0) {
             this.globePanel.addEdges(step.edges);
             this.graphPanel.addEdges(step.edges);
+            this.entitiesPanel.addEdges(step.edges);
             this.connectionCount += step.edges.length;
             this.updatePills();
           }
@@ -384,12 +393,14 @@ class DashboardApp {
       if (step.nodes && step.nodes.length > 0) {
         this.globePanel.addNodes(step.nodes);
         this.graphPanel.addNodes(step.nodes);
+        this.entitiesPanel.addNodes(step.nodes);
         this.entityCount += step.nodes.length;
         this.updatePills();
       }
       if (step.edges && step.edges.length > 0) {
         this.globePanel.addEdges(step.edges);
         this.graphPanel.addEdges(step.edges);
+        this.entitiesPanel.addEdges(step.edges);
         this.connectionCount += step.edges.length;
         this.updatePills();
       }

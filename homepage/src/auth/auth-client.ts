@@ -1,4 +1,4 @@
-import createAuth0Client, { type Auth0Client, type IdToken } from '@auth0/auth0-spa-js';
+import { createAuth0Client, type Auth0Client, type IdToken } from '@auth0/auth0-spa-js';
 import { getAuth0Config } from './auth-config';
 import type { AuthSession, UserRole } from './types';
 

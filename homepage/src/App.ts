@@ -5,7 +5,9 @@ import { NarrativePanel } from '@/components/NarrativePanel';
 import { FindingsPanel } from '@/components/FindingsPanel';
 import { h } from '@/utils/dom-utils';
 import { DEMO_INVESTIGATION } from '@/services/mock-data';
-import type { InvestigationStatus } from '@/types';
+import type { InvestigationStatus, PatternAlert } from '@/types';
+import type { AuthSession } from '@/auth/types';
+import { CommonsAuthClient } from '@/auth/auth-client';
 
 export class App {
   private searchPanel: SearchPanel;
@@ -13,23 +15,28 @@ export class App {
   private graphPanel: GraphPanel;
   private narrativePanel: NarrativePanel;
   private findingsPanel: FindingsPanel;
+  private auth: CommonsAuthClient;
+  private session: AuthSession;
   private status: InvestigationStatus = 'idle';
   private aborted = false;
   private entityCount = 0;
   private connectionCount = 0;
   private patternCount = 0;
+  private findings: PatternAlert[] = [];
 
   // Stat pill elements
   private pillEntities: HTMLElement;
   private pillConnections: HTMLElement;
   private pillPatterns: HTMLElement;
 
-  constructor(root: HTMLElement) {
-    this.searchPanel = new SearchPanel((query) => this.investigate(query));
+  constructor(root: HTMLElement, auth: CommonsAuthClient, session: AuthSession) {
+    this.auth = auth;
+    this.session = session;
+    this.searchPanel = new SearchPanel((query) => this.investigate(query), session.permissions.canInvestigate);
     this.globePanel = new GlobePanel();
     this.graphPanel = new GraphPanel();
     this.narrativePanel = new NarrativePanel();
-    this.findingsPanel = new FindingsPanel();
+    this.findingsPanel = new FindingsPanel(() => void this.publishFindings(), session.permissions.canPublish);
 
     // Mount search
     const searchArea = root.querySelector('#search-area') as HTMLElement;
@@ -75,6 +82,8 @@ export class App {
     pillsContainer.appendChild(this.pillEntities);
     pillsContainer.appendChild(this.pillConnections);
     pillsContainer.appendChild(this.pillPatterns);
+
+    this.decorateNavbar(root);
   }
 
   private makePill(label: string, value: string): HTMLElement {
@@ -91,6 +100,7 @@ export class App {
   }
 
   private async investigate(query: string): Promise<void> {
+    if (!this.session.permissions.canInvestigate) return;
     if (this.status === 'running') {
       this.aborted = true;
     }
@@ -104,6 +114,7 @@ export class App {
     this.entityCount = 0;
     this.connectionCount = 0;
     this.patternCount = 0;
+    this.findings = [];
     this.updatePills();
     this.searchPanel.setDisabled(true);
 
@@ -140,6 +151,7 @@ export class App {
       if (step.patterns && step.patterns.length > 0) {
         for (const p of step.patterns) {
           this.findingsPanel.addPattern(p);
+          this.findings.push(p);
           this.patternCount++;
         }
         this.updatePills();
@@ -150,6 +162,52 @@ export class App {
       this.setStatus('complete');
     }
     this.searchPanel.setDisabled(false);
+    this.findingsPanel.setPublishBusy(false);
+  }
+
+  private decorateNavbar(root: HTMLElement): void {
+    const navRight = root.querySelector('.navbar__right') as HTMLElement | null;
+    const signInBtn = root.querySelector('.navbar__signin') as HTMLButtonElement | null;
+    if (!navRight || !signInBtn) return;
+
+    const identity = h('div', { className: 'navbar__identity' });
+    identity.appendChild(h('span', { className: 'navbar__identity-name' }, this.session.userName));
+    identity.appendChild(h('span', { className: 'navbar__identity-role' }, this.session.roles.join(', ') || 'viewer'));
+    navRight.insertBefore(identity, signInBtn);
+
+    signInBtn.textContent = 'Log Out';
+    signInBtn.addEventListener('click', () => this.auth.logout());
+  }
+
+  private async publishFindings(): Promise<void> {
+    if (!this.session.permissions.canPublish || this.findings.length === 0) return;
+
+    this.findingsPanel.setPublishBusy(true);
+    this.findingsPanel.setPublishFeedback('Publishing findings to the protected backend...');
+
+    try {
+      const accessToken = await this.auth.getAccessToken();
+      const res = await fetch('/api/publish', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ findings: this.findings }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error || 'Failed to publish findings');
+      }
+
+      this.findingsPanel.setPublishFeedback(`Published ${body.findingsCount} findings successfully.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to publish findings';
+      this.findingsPanel.setPublishFeedback(message);
+    } finally {
+      this.findingsPanel.setPublishBusy(false);
+    }
   }
 
   private setStatus(status: InvestigationStatus): void {

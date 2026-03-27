@@ -1,251 +1,262 @@
 """
 migrate_to_turso.py — Upload the local SQLite knowledge graph to Turso cloud.
 
-Reads from data/commons_graph.db (local SQLite) and uploads all entities
-and edges to the Turso remote database using the libsql_experimental SDK.
-
-The libsql_experimental package creates an embedded replica locally and
-syncs it to the remote Turso database via WebSocket. This is much faster
-and more reliable than the raw HTTP /v2/pipeline endpoint.
+Strategy: dump to a SQL file then pipe into `turso db shell` (fastest: 30-90s).
+Fallback: Turso HTTP /v2/pipeline API with batched INSERTs (5-10 min, no CLI).
 
 Usage:
-    python -m pipeline.migrate_to_turso [--start-entity N] [--start-edge N]
-
-Environment variables required:
-    TURSO_DATABASE_URL  — e.g. libsql://commons-graph-xxx.turso.io
-    TURSO_AUTH_TOKEN    — JWT token from `turso db tokens create <db>`
+    python -m pipeline.migrate_to_turso [--db-name commons-graph] [--http]
 """
 
-import argparse
-import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-# Load .env from project root so TURSO_* vars are available
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-import libsql_experimental as libsql
+# ── Config ────────────────────────────────────────────────────────────────────
+DB_PATH       = Path(__file__).resolve().parent.parent / "data" / "commons_graph.db"
+TURSO_DB_NAME = os.environ.get("TURSO_DB_NAME", "commons-graph")
+TURSO_URL     = os.environ.get("TURSO_DATABASE_URL", "").rstrip("/")
+TURSO_TOKEN   = os.environ.get("TURSO_AUTH_TOKEN", "")
+HTTP_BATCH    = 200  # rows per HTTP request (keep low to avoid 30s timeouts)
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id TEXT PRIMARY KEY, type TEXT, name TEXT, aliases TEXT,
+    properties TEXT, sources TEXT, first_seen TEXT, last_updated TEXT, flagged TEXT
+);
+CREATE TABLE IF NOT EXISTS edges (
+    edge_id TEXT PRIMARY KEY, source_entity TEXT, target_entity TEXT,
+    relationship TEXT, properties TEXT, source_dataset TEXT, confidence REAL
+);
+CREATE INDEX IF NOT EXISTS idx_edge_source ON edges(source_entity);
+CREATE INDEX IF NOT EXISTS idx_edge_target ON edges(target_entity);
+CREATE INDEX IF NOT EXISTS idx_edge_rel    ON edges(relationship);
+CREATE INDEX IF NOT EXISTS idx_entity_type ON entities(type);
+"""
 
-# Local SQLite source database
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "commons_graph.db"
 
-# Turso connection (read from environment)
-TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "").rstrip("/")
-TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
-
-# Batch size for executemany — sync after each batch
-ENTITY_BATCH = 500   # entities per sync call
-EDGE_BATCH = 500     # edges per sync call
-
-# Local replica file (libsql_experimental uses an embedded local SQLite cache)
-REPLICA_PATH = "/tmp/commons_turso_replica.db"
+def _esc(v):
+    """SQL-escape a Python value: None→NULL, numbers→literal, strings→quoted."""
+    if v is None:
+        return "NULL"
+    if isinstance(v, (int, float)):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
 
 
-def open_turso() -> libsql.Connection:
+# ── Method 1: Turso CLI pipe (~30–90s for 400K rows) ─────────────────────────
+
+def migrate_via_cli(db_name: str = TURSO_DB_NAME) -> None:
     """
-    Open a connection to the Turso remote database via libsql_experimental.
+    Stream the local SQLite DB into Turso via `turso db shell <db-name> < dump.sql`.
 
-    libsql_experimental creates a local SQLite file (REPLICA_PATH) that
-    acts as an embedded replica: reads come from the local replica,
-    writes go to local first, then conn.sync() pushes to remote Turso.
+    This is the fastest path: the Turso CLI manages its own WebSocket
+    connection and streams SQL natively without per-row HTTP overhead.
+    Expected: ~30-90s for 186K entities + 245K edges.
     """
-    conn = libsql.connect(REPLICA_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-    conn.sync()   # pull latest state from remote before writing
-    return conn
+    print(f"Generating SQL dump for Turso DB: {db_name}")
+    src = sqlite3.connect(str(DB_PATH))
+    ec = src.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+    ed = src.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    print(f"  Source: {ec:,} entities, {ed:,} edges")
 
-
-def init_schema(conn):
-    """Create the entities and edges tables in Turso if they don't exist."""
-    print("Initialising schema in Turso...")
-    # Mirror the exact schema from pipeline/aerospike_loader.py
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS entities (
-            entity_id    TEXT PRIMARY KEY,
-            type         TEXT,
-            name         TEXT,
-            aliases      TEXT,
-            properties   TEXT,
-            sources      TEXT,
-            first_seen   TEXT,
-            last_updated TEXT,
-            flagged      TEXT
-        );
-        CREATE TABLE IF NOT EXISTS edges (
-            edge_id        TEXT PRIMARY KEY,
-            source_entity  TEXT,
-            target_entity  TEXT,
-            relationship   TEXT,
-            properties     TEXT,
-            source_dataset TEXT,
-            confidence     REAL
-        );
-        CREATE INDEX IF NOT EXISTS idx_edge_source ON edges(source_entity);
-        CREATE INDEX IF NOT EXISTS idx_edge_target ON edges(target_entity);
-        CREATE INDEX IF NOT EXISTS idx_edge_rel ON edges(relationship);
-        CREATE INDEX IF NOT EXISTS idx_entity_type ON entities(type);
-    """)
-    conn.commit()
-    conn.sync()   # push schema to remote
-    print("  Schema ready.")
-
-
-def migrate_entities(src: sqlite3.Connection, dst: libsql.Connection, start_offset: int = 0):
-    """Upload all entities from local SQLite to Turso in batches using executemany."""
-
-    total = src.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-    print(f"\nMigrating entities: {total:,} total, starting at offset {start_offset:,}")
-
-    uploaded = 0
-    offset = start_offset
     t0 = time.time()
+    TX_BATCH = 1000  # rows per transaction — keeps each TX small enough for Turso
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        fpath = f.name
+        # Schema first (idempotent)
+        f.write(SCHEMA_SQL + "\n")
 
-    while True:
-        # Fetch next batch from local SQLite source
-        rows = src.execute(
+        # Entities — commit every TX_BATCH rows
+        batch_count = 0
+        f.write("BEGIN TRANSACTION;\n")
+        for i, row in enumerate(src.execute(
             "SELECT entity_id, type, name, aliases, properties, sources, "
-            "first_seen, last_updated, flagged FROM entities LIMIT ? OFFSET ?",
-            (ENTITY_BATCH, offset),
-        ).fetchall()
+            "first_seen, last_updated, flagged FROM entities"
+        )):
+            f.write(
+                f"INSERT OR IGNORE INTO entities VALUES "
+                f"({','.join(_esc(v) for v in row)});\n"
+            )
+            batch_count += 1
+            if batch_count >= TX_BATCH:
+                f.write("COMMIT;\nBEGIN TRANSACTION;\n")
+                batch_count = 0
+        f.write("COMMIT;\n")
 
-        if not rows:
-            break   # done
-
-        # Insert into local libsql replica
-        # INSERT OR IGNORE skips rows already present (safe to re-run)
-        dst.executemany(
-            "INSERT OR IGNORE INTO entities "
-            "(entity_id, type, name, aliases, properties, sources, first_seen, last_updated, flagged) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]) for r in rows],
-        )
-        dst.commit()
-        # Sync local replica to remote Turso
-        dst.sync()
-
-        uploaded += len(rows)
-        offset += len(rows)
-
-        elapsed = time.time() - t0
-        rate = uploaded / elapsed if elapsed > 0 else 0
-        pct = (offset / total) * 100
-        eta = (total - offset) / rate if rate > 0 else 0
-        print(
-            f"  {offset:>7,}/{total:,} ({pct:.1f}%)  "
-            f"{rate:.0f} rows/s  ETA {eta:.0f}s",
-            end="\r",
-        )
-
-    print(f"\n  ✓ Entities done: {uploaded:,} uploaded in {time.time()-t0:.0f}s")
-
-
-def migrate_edges(src: sqlite3.Connection, dst: libsql.Connection, start_offset: int = 0):
-    """Upload all edges from local SQLite to Turso in batches."""
-
-    total = src.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-    print(f"\nMigrating edges: {total:,} total, starting at offset {start_offset:,}")
-
-    uploaded = 0
-    offset = start_offset
-    t0 = time.time()
-
-    while True:
-        rows = src.execute(
+        # Edges — same pattern
+        batch_count = 0
+        f.write("BEGIN TRANSACTION;\n")
+        for row in src.execute(
             "SELECT edge_id, source_entity, target_entity, relationship, "
-            "properties, source_dataset, confidence FROM edges LIMIT ? OFFSET ?",
-            (EDGE_BATCH, offset),
-        ).fetchall()
-
-        if not rows:
-            break
-
-        dst.executemany(
-            "INSERT OR IGNORE INTO edges "
-            "(edge_id, source_entity, target_entity, relationship, "
-            "properties, source_dataset, confidence) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows],
-        )
-        dst.commit()
-        dst.sync()
-
-        uploaded += len(rows)
-        offset += len(rows)
-
-        elapsed = time.time() - t0
-        rate = uploaded / elapsed if elapsed > 0 else 0
-        pct = (offset / total) * 100
-        eta = (total - offset) / rate if rate > 0 else 0
-        print(
-            f"  {offset:>7,}/{total:,} ({pct:.1f}%)  "
-            f"{rate:.0f} rows/s  ETA {eta:.0f}s",
-            end="\r",
-        )
-
-    print(f"\n  ✓ Edges done: {uploaded:,} uploaded in {time.time()-t0:.0f}s")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Migrate local SQLite graph to Turso")
-    parser.add_argument("--start-entity", type=int, default=0,
-                        help="Skip this many entities (resume from offset)")
-    parser.add_argument("--start-edge", type=int, default=0,
-                        help="Skip this many edges (resume from offset)")
-    parser.add_argument("--entities-only", action="store_true",
-                        help="Only migrate entities (skip edges)")
-    parser.add_argument("--edges-only", action="store_true",
-                        help="Only migrate edges (skip entities)")
-    args = parser.parse_args()
-
-    # Validate environment
-    if not TURSO_URL:
-        print("ERROR: TURSO_DATABASE_URL not set in environment", file=sys.stderr)
-        sys.exit(1)
-    if not TURSO_TOKEN:
-        print("ERROR: TURSO_AUTH_TOKEN not set in environment", file=sys.stderr)
-        sys.exit(1)
-    if not DB_PATH.exists():
-        print(f"ERROR: Local SQLite DB not found at {DB_PATH}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Source DB:  {DB_PATH} ({DB_PATH.stat().st_size / 1e6:.1f} MB)")
-    print(f"Target URL: {TURSO_URL}")
-    print(f"Replica:    {REPLICA_PATH}")
-
-    # Open local source database (read-only)
-    src = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-
-    # Open Turso destination via libsql_experimental embedded replica
-    print("\nConnecting to Turso...")
-    dst = open_turso()
-    print("  Connected.")
-
-    # Create schema in Turso if needed (always safe — IF NOT EXISTS)
-    if not args.edges_only:
-        init_schema(dst)
-
-    if not args.edges_only:
-        migrate_entities(src, dst, start_offset=args.start_entity)
-
-    if not args.entities_only:
-        migrate_edges(src, dst, start_offset=args.start_edge)
-
+            "properties, source_dataset, confidence FROM edges"
+        ):
+            f.write(
+                f"INSERT OR IGNORE INTO edges VALUES "
+                f"({','.join(_esc(v) for v in row)});\n"
+            )
+            batch_count += 1
+            if batch_count >= TX_BATCH:
+                f.write("COMMIT;\nBEGIN TRANSACTION;\n")
+                batch_count = 0
+        f.write("COMMIT;\n")
     src.close()
 
-    # Report final counts in Turso via a fresh sync
-    print("\nVerifying Turso counts...")
-    dst.sync()
-    entity_count = dst.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-    edge_count = dst.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-    print(f"  Turso entities: {entity_count:,}")
-    print(f"  Turso edges:    {edge_count:,}")
-    print("\n✓ Migration complete!")
+    sz = Path(fpath).stat().st_size / 1_048_576
+    print(f"  Dump: {sz:.1f} MB in {time.time()-t0:.0f}s. Uploading via CLI...")
+    t1 = time.time()
+    with open(fpath) as sql_f:
+        result = subprocess.run(
+            ["turso", "db", "shell", db_name],
+            stdin=sql_f,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 min safety timeout
+        )
+    os.unlink(fpath)
 
+    if result.returncode != 0:
+        print(f"  ✗ turso shell failed:\n{result.stderr[:2000]}")
+        sys.exit(1)
+
+    print(f"  ✓ Upload complete in {time.time()-t1:.0f}s")
+
+
+# ── Method 2: Turso HTTP API (fallback, ~5–10 min for 400K rows) ─────────────
+
+def migrate_via_http() -> None:
+    """
+    Upload via the Turso /v2/pipeline HTTP endpoint in small batches.
+    Slower than CLI but works anywhere without the CLI installed.
+    Uses INSERT OR IGNORE so it's safe to re-run after interruptions.
+    """
+    import requests  # type: ignore
+
+    if not TURSO_URL or not TURSO_TOKEN:
+        print("ERROR: TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set")
+        sys.exit(1)
+
+    hdrs = {"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"}
+
+    def run_batch(stmts: list[str]) -> None:
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": s}} for s in stmts if s.strip()
+            ]
+        }
+        if not payload["requests"]:
+            return
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    f"{TURSO_URL}/v2/pipeline", json=payload, headers=hdrs, timeout=30
+                )
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+                return
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+
+    print("Using HTTP API fallback (turso CLI not found)")
+    run_batch(SCHEMA_SQL.split(";"))
+
+    src = sqlite3.connect(str(DB_PATH))
+    for tbl, query in [
+        (
+            "entities",
+            "SELECT entity_id, type, name, aliases, properties, sources, "
+            "first_seen, last_updated, flagged FROM entities",
+        ),
+        (
+            "edges",
+            "SELECT edge_id, source_entity, target_entity, relationship, "
+            "properties, source_dataset, confidence FROM edges",
+        ),
+    ]:
+        total = src.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        print(f"Uploading {total:,} {tbl}...")
+        t0, uploaded, batch = time.time(), 0, []
+        for row in src.execute(query):
+            batch.append(
+                f"INSERT OR IGNORE INTO {tbl} VALUES "
+                f"({','.join(_esc(v) for v in row)})"
+            )
+            if len(batch) >= HTTP_BATCH:
+                run_batch(batch)
+                uploaded += len(batch)
+                batch = []
+                pct = uploaded / total * 100
+                rate = uploaded / max(1, time.time() - t0)
+                print(f"  {uploaded:>7,}/{total:,} ({pct:.0f}%)  {rate:.0f}/s", end="\r")
+        if batch:
+            run_batch(batch)
+            uploaded += len(batch)
+        print(f"\n  ✓ {tbl}: {uploaded:,} in {time.time()-t0:.0f}s")
+    src.close()
+
+
+# ── Verification ──────────────────────────────────────────────────────────────
+
+def verify(db_name: str = TURSO_DB_NAME) -> None:
+    """Count rows in Turso to confirm the migration succeeded."""
+    if not shutil.which("turso"):
+        print("(CLI not found — skipping verification)")
+        return
+    print("\nVerifying row counts in Turso:")
+    for tbl in ("entities", "edges"):
+        r = subprocess.run(
+            ["turso", "db", "shell", db_name, f"SELECT COUNT(*) FROM {tbl};"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            count = r.stdout.strip().splitlines()[-1]
+            print(f"  {tbl}: {count}")
+        else:
+            print(f"  {tbl}: verification failed — {r.stderr[:200]}")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Migrate local SQLite knowledge graph to Turso cloud"
+    )
+    parser.add_argument("--db-name", default=TURSO_DB_NAME, help="Turso database name")
+    parser.add_argument(
+        "--http", action="store_true", help="Force HTTP mode (skip CLI even if available)"
+    )
+    parser.add_argument(
+        "--verify-only", action="store_true", help="Only verify row counts (no upload)"
+    )
+    args = parser.parse_args()
+
+    if not DB_PATH.exists():
+        print(f"ERROR: {DB_PATH} not found. Run: python -m pipeline.run_pipeline")
+        sys.exit(1)
+
+    if args.verify_only:
+        verify(args.db_name)
+        sys.exit(0)
+
+    t_start = time.time()
+    if args.http or not shutil.which("turso"):
+        migrate_via_http()
+    else:
+        migrate_via_cli(args.db_name)
+
+    verify(args.db_name)
+    print(f"\n✓ Total time: {time.time()-t_start:.0f}s")

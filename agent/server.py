@@ -20,11 +20,13 @@ Usage:
 
 import argparse
 import json
+import mimetypes
 import os
 import signal
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 # ── LLM backend selection ───────────────────────────────────────────────
@@ -48,16 +50,32 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
 ]
 
+# ── Static file serving (production) ────────────────────────────────────
+# In production the Python server also serves the built Vite frontend.
+# In dev, Vite's dev server proxies /api requests to us instead.
+STATIC_DIR = Path(__file__).resolve().parent.parent / "homepage" / "dist"
+
+# Common MIME types for static assets (mimetypes module may miss some)
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/webp", ".webp")
+
 
 def _cors_origin(request_origin: str | None) -> str:
     """Return the allowed origin for CORS headers.
     
-    If the request origin is in our allowlist, echo it back.
-    Otherwise return the first allowed origin (won't match browser's
-    check, effectively blocking the request).
+    If the request origin is in our allowlist or matches a *.onrender.com
+    domain, echo it back. Otherwise return the first allowed origin
+    (won't match browser's check, effectively blocking the request).
     """
-    if request_origin and request_origin in ALLOWED_ORIGINS:
-        return request_origin
+    if request_origin:
+        if request_origin in ALLOWED_ORIGINS:
+            return request_origin
+        # Accept any *.onrender.com origin for Render deployments
+        if request_origin.endswith(".onrender.com"):
+            return request_origin
     return ALLOWED_ORIGINS[0]
 
 
@@ -94,7 +112,8 @@ class InvestigationHandler(BaseHTTPRequestHandler):
         elif path == "/api/health":
             self._handle_health()
         else:
-            self._send_json({"error": "Not found"}, 404)
+            # Serve static frontend files from homepage/dist/ in production
+            self._serve_static(path)
 
     def _handle_health(self):
         """Health check endpoint — returns server status.
@@ -171,6 +190,60 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+    def _serve_static(self, path: str):
+        """Serve static files from the Vite build output.
+
+        Handles SPA routing by falling back to index.html for paths
+        that don't match a real file (e.g. /investigate → index.html).
+        """
+        if not STATIC_DIR.is_dir():
+            self._send_json({"error": "Frontend not built. Run: cd homepage && npm run build"}, 404)
+            return
+
+        # Map URL path to a file on disk
+        # Strip leading slash and resolve relative to STATIC_DIR
+        rel_path = path.lstrip("/")
+        file_path = STATIC_DIR / rel_path if rel_path else STATIC_DIR / "index.html"
+
+        # If the path points to a directory, look for index.html inside it
+        if file_path.is_dir():
+            file_path = file_path / "index.html"
+
+        # SPA fallback: if no matching file, serve index.html
+        # so the frontend router can handle the URL
+        if not file_path.is_file():
+            file_path = STATIC_DIR / "index.html"
+
+        if not file_path.is_file():
+            self._send_json({"error": "Not found"}, 404)
+            return
+
+        # Security: ensure the resolved path is inside STATIC_DIR
+        # to prevent directory traversal attacks (e.g. ../../etc/passwd)
+        try:
+            file_path.resolve().relative_to(STATIC_DIR.resolve())
+        except ValueError:
+            self._send_json({"error": "Forbidden"}, 403)
+            return
+
+        # Determine Content-Type from the file extension
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        # Read and serve the file
+        body = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        # Cache static assets with hashed filenames aggressively
+        if "/assets/" in path:
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_json(self, data: dict, status: int = 200):
         """Send a JSON response with CORS headers.
         
@@ -221,4 +294,6 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     args = parser.parse_args()
-    serve(args.host, args.port)
+    # Render (and most PaaS) inject PORT env var — use it if present
+    port = int(os.environ.get("PORT", args.port))
+    serve(args.host, port)

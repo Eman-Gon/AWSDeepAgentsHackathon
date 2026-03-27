@@ -1,0 +1,10 @@
+# Root requirements.txt for Render deployment.
+# Includes only the packages needed to run the investigation backend.
+# Pipeline-only packages (airbyte, aerospike, pandas) are excluded
+# since the pipeline runs locally to seed the SQLite DB before deploy.
+
+python-dotenv>=1.0.0          # load .env secrets
+google-genai>=1.68.0          # Gemini SDK with function calling
+thefuzz[speedup]>=0.20.0      # fuzzy entity name matching
+openai>=1.0.0                 # OpenAI SDK for TrueFoundry AI Gateway
+requests>=2.31.0              # HTTP client

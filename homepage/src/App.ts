@@ -1,4 +1,4 @@
-import { h } from 'preact';
+import { h, type FunctionalComponent } from 'preact';
 import { useEffect, useMemo, useRef } from 'preact/hooks';
 import { useAuth0 } from '@auth0/auth0-react';
 import { SearchPanel } from '@/components/SearchPanel';
@@ -54,7 +54,7 @@ function buildSession(user: Record<string, unknown> | undefined): AuthSession {
   };
 }
 
-export function App() {
+export function AuthenticatedApp() {
   const {
     isAuthenticated,
     isLoading,
@@ -65,6 +65,13 @@ export function App() {
   } = useAuth0();
 
   const session = useMemo(() => buildSession(user as Record<string, unknown> | undefined), [user]);
+  const authError = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get('error');
+    const description = params.get('error_description');
+    if (!error) return '';
+    return description ? `${error}: ${description}` : error;
+  }, []);
 
   if (isLoading) {
     return h('div', { className: 'auth-shell' },
@@ -80,6 +87,9 @@ export function App() {
       h('div', { className: 'auth-shell__card' },
         h('h1', {}, 'Commons'),
         h('p', {}, 'Sign in to access the investigative dashboard.'),
+        authError
+          ? h('p', { className: 'auth-shell__error' }, authError)
+          : null,
         h('button', {
           className: 'auth-shell__button',
           onClick: () => void loginWithRedirect(),
@@ -100,6 +110,38 @@ export function App() {
     },
   });
 }
+
+export function AppWithBypass() {
+  const session: AuthSession = {
+    isAuthenticated: true,
+    userName: 'Hackathon Demo',
+    email: 'demo@commons.local',
+    roles: ['journalist'],
+    isHuman: true,
+    permissions: {
+      canInvestigate: true,
+      canPublish: false,
+    },
+  };
+
+  return h(DashboardMount, {
+    auth: {
+      session,
+      logout: () => window.location.reload(),
+      getAccessToken: async () => {
+        throw new Error('Dev bypass is enabled. No Auth0 token is available.');
+      },
+    },
+  });
+}
+
+export const App: FunctionalComponent<{ devBypass?: boolean }> = ({ devBypass }) => {
+  if (devBypass) {
+    return h(AppWithBypass, {});
+  }
+
+  return h(AuthenticatedApp, {});
+};
 
 function DashboardMount({ auth }: { auth: DashboardAuthBridge }) {
   const rootRef = useRef<HTMLDivElement | null>(null);

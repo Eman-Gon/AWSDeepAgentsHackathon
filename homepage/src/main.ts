@@ -12,6 +12,12 @@ function bootstrap(): void {
   const root = document.getElementById('app');
   if (!root) throw new Error('Missing #app root');
 
+  const devBypass = import.meta.env.VITE_AUTH_DEV_BYPASS === 'true';
+  if (devBypass) {
+    render(h(App, { devBypass: true }), root);
+    return;
+  }
+
   const error = getAuth0ConfigError();
   if (error) {
     root.innerHTML = `

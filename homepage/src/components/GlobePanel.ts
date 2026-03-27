@@ -322,12 +322,15 @@ export class GlobePanel extends Panel {
   private hasFlewToSF = false;
 
   flyToSF(): void {
-    if (this.globe && !this.hasFlewToSF) {
-      // Only zoom in once — repeated fly-to animations look cartoonish
-      this.globe.pointOfView({ lat: 37.77, lng: -122.42, altitude: 0.32 }, 1800);
-      // Stop auto-rotate when investigating
-      const controls = this.globe.controls();
-      controls.autoRotate = false;
+    if (!this.globe) return;
+    // Stop auto-rotate when investigation starts
+    const controls = this.globe.controls();
+    controls.autoRotate = false;
+    // Gently tighten the view on first investigation only — subsequent
+    // calls are no-ops so the user can keep exploring without being
+    // yanked back to the same camera angle.
+    if (!this.hasFlewToSF) {
+      this.globe.pointOfView({ lat: 37.77, lng: -122.42, altitude: 0.6 }, 1200);
       this.hasFlewToSF = true;
     }
   }

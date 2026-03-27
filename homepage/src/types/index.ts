@@ -8,6 +8,8 @@ export interface GraphNode {
   font?: { color: string; size: number; face: string };
   shape?: string;
   size?: number;
+  level?: number;
+  mass?: number;
 }
 
 export interface GraphEdge {

@@ -6,36 +6,50 @@
   <title>Commons — Shared Investigation Intelligence</title>
   <meta name="description" content="An agentic investigation platform that detects corruption patterns in public records." />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <script type="module" crossorigin src="/assets/index-D8tyyvSu.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-Blq-vryZ.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script type="module" crossorigin src="/assets/index-B8_z9DUC.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-SZjg5GDd.css">
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
-    <header id="app-header" class="app-header">
-      <div class="app-header__brand">
-        <div class="app-header__logo">C</div>
-        <div>
-          <h1 class="app-header__title">Commons</h1>
-          <p class="app-header__subtitle">Shared Investigation Intelligence</p>
+    <!-- Navbar -->
+    <nav id="navbar" class="navbar">
+      <div class="navbar__left">
+        <div class="navbar__logo">C</div>
+        <span class="navbar__name">Commons</span>
+        <span class="navbar__divider"></span>
+        <span class="navbar__tagline">Investigation Intelligence</span>
+      </div>
+      <div class="navbar__right">
+        <div id="stat-pills" class="stat-pills"></div>
+        <button class="navbar__signin">Sign In</button>
+      </div>
+    </nav>
+
+    <!-- Search area -->
+    <div id="search-area" class="search-area"></div>
+
+    <!-- Main content -->
+    <div class="main">
+      <!-- Left: hero visualization -->
+      <div class="main__left">
+        <div id="hero-viz" class="hero-viz">
+          <div id="globe-area" class="hero-viz__globe"></div>
+          <div id="graph-area" class="hero-viz__graph"></div>
+          <div class="hero-viz__toggle" id="viz-toggle">
+            <button class="hero-viz__tab hero-viz__tab--active" data-view="globe">Globe</button>
+            <button class="hero-viz__tab" data-view="graph">Network</button>
+          </div>
         </div>
       </div>
-      <div class="app-header__actions">
-        <button class="app-header__signin">Sign In</button>
-      </div>
-    </header>
 
-    <!-- Search row -->
-    <div id="search-row" class="search-row"></div>
-
-    <!-- Main: globe + graph + narrative -->
-    <div class="main-layout">
-      <div class="main-layout__left">
-        <!-- Globe on top, graph network below -->
-        <div id="globe-area" class="main-layout__globe"></div>
-        <div id="graph-area" class="main-layout__graph"></div>
+      <!-- Right: timeline + findings -->
+      <div class="main__right">
+        <div id="timeline-area" class="right-section right-section--timeline"></div>
+        <div id="findings-area" class="right-section right-section--findings"></div>
       </div>
-      <div id="main-right" class="main-layout__right"></div>
     </div>
   </div>
 

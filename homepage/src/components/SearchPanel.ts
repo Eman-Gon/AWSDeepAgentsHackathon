@@ -17,39 +17,39 @@ export class SearchPanel extends Panel {
     this.onInvestigate = onInvestigate;
 
     // Search row
-    const row = h('div', { className: 'search-panel__row' });
+    const row = h('div', { className: 'search__row' });
+
+    const iconWrap = h('div', { className: 'search__icon-wrap' });
+    iconWrap.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>';
+    row.appendChild(iconWrap);
 
     this.input = h('input', {
       type: 'text',
-      className: 'search-panel__input',
-      placeholder: 'Investigate an entity — person, company, or contract...',
+      className: 'search__input',
+      placeholder: 'Investigate a person, company, or contract...',
     });
     this.input.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter') this.submit();
     });
-
-    this.btn = h('button', { className: 'search-panel__btn' }, 'Investigate');
-    this.btn.addEventListener('click', () => this.submit());
-
     row.appendChild(this.input);
+
+    this.btn = h('button', { className: 'search__btn' }, 'Investigate');
+    this.btn.addEventListener('click', () => this.submit());
     row.appendChild(this.btn);
+
     this.content.appendChild(row);
 
-    // Suggestions
-    const suggestions = h('div', { className: 'search-panel__suggestions' });
-    const label = h('span', { className: 'search-panel__label' }, 'Try:');
-    suggestions.appendChild(label);
-
+    // Chips
+    const chips = h('div', { className: 'search__chips' });
     for (const s of SUGGESTIONS) {
-      const chip = h('button', { className: 'search-panel__chip' }, s);
+      const chip = h('button', { className: 'search__chip' }, s);
       chip.addEventListener('click', () => {
         this.input.value = s;
         this.submit();
       });
-      suggestions.appendChild(chip);
+      chips.appendChild(chip);
     }
-
-    this.content.appendChild(suggestions);
+    this.content.appendChild(chips);
   }
 
   private submit(): void {

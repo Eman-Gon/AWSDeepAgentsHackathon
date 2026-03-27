@@ -1,8 +1,8 @@
 import { Panel } from './Panel';
 import { h } from '@/utils/dom-utils';
 import { escapeHtml } from '@/utils/sanitize';
-import { TOOL_ICONS, SEVERITY_COLORS } from '@/config/constants';
-import type { AgentStep, PatternAlert, InvestigationStatus } from '@/types';
+import { TOOL_ICONS } from '@/config/constants';
+import type { AgentStep, InvestigationStatus } from '@/types';
 
 export class NarrativePanel extends Panel {
   private listEl: HTMLElement;
@@ -11,18 +11,17 @@ export class NarrativePanel extends Panel {
   constructor() {
     super({
       id: 'narrative-panel',
-      title: 'Agent Activity',
+      title: 'Investigation Timeline',
       className: 'narrative-panel',
       showCount: true,
       trackActivity: true,
     });
 
-    this.statusEl = h('span', { className: 'narrative-panel__status' });
-    // Insert status into header
+    this.statusEl = h('span', { className: 'timeline__status' });
     const header = this.el.querySelector('.panel__header');
     if (header) header.appendChild(this.statusEl);
 
-    this.listEl = h('div', { className: 'narrative-panel__list' });
+    this.listEl = h('div', { className: 'timeline__list' });
     this.content.appendChild(this.listEl);
 
     this.showIdle();
@@ -30,23 +29,23 @@ export class NarrativePanel extends Panel {
 
   private showIdle(): void {
     this.listEl.innerHTML = '';
-    const msg = h('p', { className: 'narrative-panel__placeholder' }, 'Enter an entity name above to start an investigation...');
+    const msg = h('p', { className: 'timeline__placeholder' }, 'Agent steps will appear here...');
     this.listEl.appendChild(msg);
   }
 
   setStatus(status: InvestigationStatus): void {
     this.statusEl.innerHTML = '';
     if (status === 'running') {
-      const dot = h('span', { className: 'narrative-panel__dot narrative-panel__dot--pulse' });
+      const dot = h('span', { className: 'timeline__dot timeline__dot--pulse' });
       this.statusEl.appendChild(dot);
-      this.statusEl.appendChild(document.createTextNode(' Investigating'));
-      this.statusEl.className = 'narrative-panel__status narrative-panel__status--running';
+      this.statusEl.appendChild(document.createTextNode('Running'));
+      this.statusEl.className = 'timeline__status timeline__status--running';
     } else if (status === 'complete') {
-      this.statusEl.textContent = 'Complete';
-      this.statusEl.className = 'narrative-panel__status narrative-panel__status--complete';
+      this.statusEl.textContent = 'Done';
+      this.statusEl.className = 'timeline__status timeline__status--complete';
     } else {
       this.statusEl.textContent = '';
-      this.statusEl.className = 'narrative-panel__status';
+      this.statusEl.className = 'timeline__status';
     }
   }
 
@@ -57,80 +56,52 @@ export class NarrativePanel extends Panel {
   }
 
   addStep(step: AgentStep, index: number): void {
-    // Remove placeholder
-    const placeholder = this.listEl.querySelector('.narrative-panel__placeholder');
+    const placeholder = this.listEl.querySelector('.timeline__placeholder');
     if (placeholder) placeholder.remove();
 
-    const entry = h('div', { className: 'narrative-panel__entry narrative-panel__entry--animate' });
+    const icon = TOOL_ICONS[step.tool] ?? '>';
+    const entry = h('div', { className: 'timeline__entry timeline__entry--animate' });
 
-    const icon = TOOL_ICONS[step.tool] ?? '🔧';
-
-    // Header row: icon + tool name
-    const headerRow = h('div', { className: 'narrative-panel__entry-header' });
-    headerRow.appendChild(h('span', { className: 'narrative-panel__icon' }, icon));
-
-    const body = h('div', { className: 'narrative-panel__entry-body' });
-    body.appendChild(h('span', { className: 'narrative-panel__tool' }, step.tool));
-    body.appendChild(h('p', { className: 'narrative-panel__message' }, escapeHtml(step.message)));
-
-    headerRow.appendChild(body);
-    entry.appendChild(headerRow);
-
-    // Pattern alerts
-    if (step.patterns && step.patterns.length > 0) {
-      const alertsEl = h('div', { className: 'narrative-panel__alerts' });
-      for (const p of step.patterns) {
-        alertsEl.appendChild(this.renderAlert(p));
-      }
-      entry.appendChild(alertsEl);
+    // Timeline dot
+    const dotCol = h('div', { className: 'timeline__dot-col' });
+    const dot = h('div', { className: 'timeline__step-dot' });
+    dotCol.appendChild(dot);
+    if (index > 0) {
+      const line = h('div', { className: 'timeline__line' });
+      dotCol.appendChild(line);
     }
 
+    // Content
+    const body = h('div', { className: 'timeline__body' });
+    const toolRow = h('div', { className: 'timeline__tool-row' });
+    toolRow.appendChild(h('span', { className: 'timeline__icon' }, icon));
+    toolRow.appendChild(h('span', { className: 'timeline__tool-name' }, step.tool.replace(/_/g, ' ')));
+    body.appendChild(toolRow);
+    body.appendChild(h('p', { className: 'timeline__message' }, escapeHtml(step.message)));
+
+    entry.appendChild(dotCol);
+    entry.appendChild(body);
     this.listEl.appendChild(entry);
     this.setCount(index + 1);
     this.pulse();
 
-    // Auto-scroll
     this.content.scrollTop = this.content.scrollHeight;
   }
 
   showTyping(): void {
-    const existing = this.listEl.querySelector('.narrative-panel__typing');
-    if (existing) return;
-    const dots = h('div', { className: 'narrative-panel__typing' });
+    if (this.listEl.querySelector('.timeline__typing')) return;
+    const dots = h('div', { className: 'timeline__typing' });
     for (let i = 0; i < 3; i++) {
-      const dot = h('span', { className: 'narrative-panel__bounce-dot' });
-      dot.style.animationDelay = `${i * 150}ms`;
-      dots.appendChild(dot);
+      const d = h('span', { className: 'timeline__bounce-dot' });
+      d.style.animationDelay = `${i * 150}ms`;
+      dots.appendChild(d);
     }
     this.listEl.appendChild(dots);
     this.content.scrollTop = this.content.scrollHeight;
   }
 
   hideTyping(): void {
-    const typing = this.listEl.querySelector('.narrative-panel__typing');
-    if (typing) typing.remove();
-  }
-
-  private renderAlert(p: PatternAlert): HTMLElement {
-    const colors = SEVERITY_COLORS[p.severity];
-    const alert = h('div', { className: 'narrative-panel__alert' });
-    alert.style.borderLeftColor = colors.border;
-    alert.style.backgroundColor = colors.bg;
-    alert.style.color = colors.text;
-
-    const badgeRow = h('div', { className: 'narrative-panel__alert-header' });
-
-    const badge = h('span', { className: 'narrative-panel__badge' }, p.severity);
-    badge.style.backgroundColor = colors.badge;
-    badge.style.color = colors.text;
-    badgeRow.appendChild(badge);
-
-    badgeRow.appendChild(h('span', { className: 'narrative-panel__alert-type' }, p.type));
-    alert.appendChild(badgeRow);
-
-    alert.appendChild(h('p', { className: 'narrative-panel__alert-detail' }, escapeHtml(p.detail)));
-    alert.appendChild(h('p', { className: 'narrative-panel__alert-confidence' }, `Confidence: ${Math.round(p.confidence * 100)}%`));
-
-    return alert;
+    const t = this.listEl.querySelector('.timeline__typing');
+    if (t) t.remove();
   }
 }

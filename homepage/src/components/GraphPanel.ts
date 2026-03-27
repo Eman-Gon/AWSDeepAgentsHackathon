@@ -21,6 +21,9 @@ export class GraphPanel extends Panel {
   private statsEl: HTMLElement;
   private nodeCount = 0;
   private edgeCount = 0;
+  private rootNodeId: string | null = null;
+  private userNavigated = false;
+  private hasAutoFit = false;
 
   constructor() {
     super({
@@ -71,27 +74,62 @@ export class GraphPanel extends Panel {
     this.edgeDataSet = new DataSet<GraphEdge & { id: string }>();
 
     const options = {
+      autoResize: true,
+      layout: {
+        improvedLayout: true,
+        hierarchical: {
+          enabled: true,
+          direction: 'LR',
+          sortMethod: 'directed',
+          shakeTowards: 'roots',
+          levelSeparation: 180,
+          nodeSpacing: 150,
+          treeSpacing: 180,
+          blockShifting: true,
+          edgeMinimization: true,
+          parentCentralization: true,
+        },
+      },
       physics: {
-        stabilization: { iterations: 100 },
-        barnesHut: {
-          gravitationalConstant: -3000,
-          centralGravity: 0.2,
+        enabled: true,
+        solver: 'hierarchicalRepulsion',
+        stabilization: { iterations: 180, fit: false },
+        hierarchicalRepulsion: {
+          nodeDistance: 180,
           springLength: 150,
-          springConstant: 0.04,
-          damping: 0.09,
+          springConstant: 0.02,
+          damping: 0.18,
+          avoidOverlap: 1,
+        },
+      },
+      nodes: {
+        shape: 'dot',
+        borderWidth: 2,
+        borderWidthSelected: 3,
+        margin: { top: 12, right: 12, bottom: 12, left: 12 },
+        chosen: false,
+        font: {
+          color: '#FAFAFA',
+          size: 13,
+          face: 'Inter, system-ui, sans-serif',
+          strokeWidth: 0,
         },
       },
       edges: {
         color: { color: '#4B5563', highlight: '#9CA3AF' },
         font: { color: '#9CA3AF', size: 11, strokeWidth: 0, face: 'Inter, system-ui, sans-serif' },
         arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-        smooth: { enabled: true, type: 'continuous', roundness: 0.5 },
+        width: 1.5,
+        selectionWidth: 2,
+        smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 },
       },
       interaction: {
         hover: true,
         tooltipDelay: 100,
         zoomView: true,
         dragView: true,
+        navigationButtons: true,
+        keyboard: { enabled: true, bindToWindow: false },
       },
     };
 
@@ -100,6 +138,16 @@ export class GraphPanel extends Panel {
       { nodes: this.nodeDataSet, edges: this.edgeDataSet },
       options,
     );
+
+    this.network.once('stabilizationIterationsDone', () => {
+      this.fit(true);
+    });
+    this.network.on('zoom', () => {
+      this.userNavigated = true;
+    });
+    this.network.on('dragStart', () => {
+      this.userNavigated = true;
+    });
   }
 
   addNodes(nodes: GraphNode[]): void {
@@ -109,8 +157,18 @@ export class GraphPanel extends Panel {
     const empty = this.container.querySelector('.graph-panel__empty');
     if (empty) empty.remove();
 
+    if (!this.rootNodeId && nodes.length > 0) {
+      this.rootNodeId = nodes[0].id;
+    }
+
     const existing = new Set(this.nodeDataSet.getIds());
-    const toAdd = nodes.filter((n) => !existing.has(n.id));
+    const toAdd = nodes
+      .filter((n) => !existing.has(n.id))
+      .map((n) => ({
+        ...n,
+        mass: n.id === this.rootNodeId ? 2.4 : 1.2,
+      }));
+
     if (toAdd.length > 0) {
       this.nodeDataSet.add(toAdd);
       this.nodeCount += toAdd.length;
@@ -118,6 +176,7 @@ export class GraphPanel extends Panel {
       this.pulse();
     }
     this.updateStats();
+    this.applyTreeLevels();
     this.fit();
   }
 
@@ -132,7 +191,9 @@ export class GraphPanel extends Panel {
       this.edgeDataSet.add(toAdd);
       this.edgeCount += toAdd.length;
     }
+    this.applyTreeLevels();
     this.updateStats();
+    this.fit();
   }
 
   clear(): void {
@@ -140,14 +201,65 @@ export class GraphPanel extends Panel {
     this.edgeDataSet?.clear();
     this.nodeCount = 0;
     this.edgeCount = 0;
+    this.rootNodeId = null;
+    this.userNavigated = false;
+    this.hasAutoFit = false;
     this.setCount(0);
     this.updateStats();
   }
 
-  private fit(): void {
-    if (this.network) {
-      this.network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+  private fit(force = false): void {
+    if (!this.network) return;
+    if (!force && this.userNavigated) return;
+
+    this.network.fit({
+      animation: { duration: 500, easingFunction: 'easeInOutQuad' },
+      minZoomLevel: this.hasAutoFit ? 0.55 : 0.45,
+      maxZoomLevel: 1.15,
+    });
+    this.hasAutoFit = true;
+  }
+
+  private applyTreeLevels(): void {
+    if (!this.nodeDataSet || !this.rootNodeId) return;
+
+    const nodeIds = this.nodeDataSet.getIds() as string[];
+    const levels = new Map<string, number>([[this.rootNodeId, 0]]);
+    const queue: string[] = [this.rootNodeId];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const currentLevel = levels.get(current) ?? 0;
+      const outgoing = this.edgeDataSet?.get({
+        filter: (edge) => edge.from === current,
+      }) ?? [];
+
+      for (const edge of outgoing) {
+        if (levels.has(edge.to)) continue;
+        levels.set(edge.to, currentLevel + 1);
+        queue.push(edge.to);
+      }
     }
+
+    const updates = nodeIds.map((id) => ({
+      id,
+      level: levels.get(id) ?? 1,
+      mass: id === this.rootNodeId ? 2.4 : 1.2,
+    }));
+
+    this.nodeDataSet.update(updates);
+    this.network?.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'hierarchicalRepulsion',
+      },
+    });
+    this.network?.stabilize(80);
+  }
+
+  resetViewport(): void {
+    this.userNavigated = false;
+    this.fit(true);
   }
 
   private updateStats(): void {

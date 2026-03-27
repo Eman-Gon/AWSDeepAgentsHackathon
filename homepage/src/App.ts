@@ -7,6 +7,8 @@ import { GraphPanel } from '@/components/GraphPanel';
 import { NarrativePanel } from '@/components/NarrativePanel';
 import { FindingsPanel } from '@/components/FindingsPanel';
 import { InvestigationsPanel } from '@/components/InvestigationsPanel';
+import { TipsPanel } from '@/components/TipsPanel';
+import { TipLineInfo } from '@/components/TipLineInfo';
 import { h as dom } from '@/utils/dom-utils';
 import { DEMO_INVESTIGATION } from '@/services/mock-data';
 import { streamInvestigation } from '@/services/investigation-stream';
@@ -121,6 +123,8 @@ class DashboardApp {
   private narrativePanel: NarrativePanel;
   private findingsPanel: FindingsPanel;
   private investigationsPanel: InvestigationsPanel;
+  private tipsPanel: TipsPanel;
+  private tipLineInfo: TipLineInfo;
   private auth: DashboardAuthBridge;
   private session: AuthSession;
   private status: InvestigationStatus = 'idle';
@@ -175,12 +179,17 @@ class DashboardApp {
 
         <div class="main__right">
           <div id="timeline-area" class="right-section right-section--timeline"></div>
+          <div id="bottom-tabs" class="bottom-tabs">
+            <button class="bottom-tabs__tab bottom-tabs__tab--active" data-tab="findings">Findings</button>
+            <button class="bottom-tabs__tab" data-tab="tips">Tip Line</button>
+          </div>
           <div id="findings-area" class="right-section right-section--findings">
             <div id="save-bar" class="save-bar">
               <button id="save-investigation-btn" class="save-bar__btn" disabled>Save Investigation</button>
               <span id="save-feedback" class="save-bar__feedback"></span>
             </div>
           </div>
+          <div id="tips-area" class="right-section right-section--findings" style="display:none"></div>
         </div>
       </div>
     `;
@@ -194,6 +203,8 @@ class DashboardApp {
       onLoad: (id) => void this.loadInvestigation(id),
       onOutcomeChange: (id, outcome) => void this.updateOutcome(id, outcome),
     });
+    this.tipsPanel = new TipsPanel();
+    this.tipLineInfo = new TipLineInfo();
 
     const searchArea = root.querySelector('#search-area') as HTMLElement;
     this.searchPanel.mount(searchArea);
@@ -226,8 +237,26 @@ class DashboardApp {
 
     const timelineArea = root.querySelector('#timeline-area') as HTMLElement;
     const findingsArea = root.querySelector('#findings-area') as HTMLElement;
+    const tipsArea = root.querySelector('#tips-area') as HTMLElement;
     this.narrativePanel.mount(timelineArea);
     this.findingsPanel.mount(findingsArea);
+    this.tipLineInfo.mount(tipsArea);
+    this.tipsPanel.mount(tipsArea);
+
+    // Bottom tabs: switch between Findings and Tip Line
+    const bottomTabs = root.querySelector('#bottom-tabs') as HTMLElement;
+    bottomTabs.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('.bottom-tabs__tab') as HTMLElement | null;
+      if (!btn) return;
+      const tab = btn.dataset.tab;
+      bottomTabs.querySelectorAll('.bottom-tabs__tab').forEach((t) => t.classList.remove('bottom-tabs__tab--active'));
+      btn.classList.add('bottom-tabs__tab--active');
+      findingsArea.style.display = tab === 'findings' ? '' : 'none';
+      tipsArea.style.display = tab === 'tips' ? '' : 'none';
+    });
+
+    // Fetch tips on load
+    void this.tipsPanel.fetchTips();
 
     // Save investigation button
     const saveBtn = root.querySelector('#save-investigation-btn') as HTMLButtonElement;

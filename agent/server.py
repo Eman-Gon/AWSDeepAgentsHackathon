@@ -30,6 +30,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import secrets
 import signal
 import sqlite3
@@ -102,6 +103,19 @@ def _tips_db() -> sqlite3.Connection:
             created_at REAL NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bland_tips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            call_id TEXT UNIQUE,
+            transcript TEXT,
+            summary TEXT,
+            caller_number TEXT,
+            call_length REAL,
+            entities TEXT,  -- JSON array of extracted entity names
+            status TEXT DEFAULT 'new',  -- new | reviewed | investigating
+            created_at REAL NOT NULL
+        )
+    """)
     conn.commit()
     return conn
 
@@ -124,6 +138,28 @@ def _cors_origin(request_origin: str | None) -> str:
     if request_origin.endswith(_RENDER_ORIGIN_SUFFIX):
         return request_origin
     return ALLOWED_ORIGINS[0]
+
+
+def _extract_entities_from_transcript(text: str) -> list[str]:
+    """Extract potential entity names from call transcript."""
+    entities = set()
+
+    # Multi-word capitalized names (e.g., "John Smith", "Recology Inc")
+    for match in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', text):
+        name = match.group(1)
+        # Skip common phrases
+        if name.lower() not in ('thank you', 'good morning', 'good afternoon', 'good evening', 'how are'):
+            entities.add(name)
+
+    # Company patterns (word + LLC/Inc/Corp/Ltd)
+    for match in re.finditer(r'\b([A-Z][\w]*(?:\s+\w+)*\s+(?:LLC|Inc|Corp|Ltd|Company|Group|Foundation))\b', text):
+        entities.add(match.group(1))
+
+    # Street addresses (number + street name)
+    for match in re.finditer(r'\b(\d+\s+[A-Z][a-z]+(?:\s+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Way|Ct|Court|Pl|Place|Ln|Lane)\.?))\b', text):
+        entities.add(match.group(1))
+
+    return sorted(entities)
 
 
 class InvestigationHandler(BaseHTTPRequestHandler):
@@ -170,6 +206,8 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             self._handle_get_investigation(inv_id)
         elif path == "/api/pattern-confidence":
             self._handle_pattern_confidence()
+        elif path == "/api/bland-tips":
+            self._handle_get_bland_tips(parsed)
         elif path.startswith("/api/tips/"):
             # GET /api/tips/<token> — retrieve a tip (one-time use)
             token = path[len("/api/tips/"):]
@@ -189,6 +227,8 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             self._handle_submit_tip()
         elif path == "/api/investigations":
             self._handle_save_investigation()
+        elif path == "/api/bland-webhook":
+            self._handle_bland_webhook()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -379,6 +419,91 @@ class InvestigationHandler(BaseHTTPRequestHandler):
     def _handle_pattern_confidence(self):
         """Return historical pattern confidence statistics."""
         self._send_json(get_pattern_confidence())
+
+    # ── Bland AI tip line endpoints ──────────────────────────────────────
+
+    def _handle_bland_webhook(self):
+        """Receive a Bland AI call completion webhook and store the tip.
+
+        Bland sends a POST with call details (transcript, summary, caller info)
+        when a call to the corruption tip line completes. We extract entity names
+        from the transcript and store everything in the bland_tips table.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0 or content_length > 500_000:
+            self._send_json({"error": "Invalid content length"}, 400)
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        call_id = body.get("call_id", "")
+        if not call_id:
+            self._send_json({"error": "Missing 'call_id' field"}, 400)
+            return
+
+        transcript = body.get("concatenated_transcript", "")
+        summary = body.get("summary", "")
+        caller_number = body.get("from", "")
+        call_length = body.get("call_length", 0.0)
+        created_at = body.get("created_at", time.time())
+
+        # Extract entity names from the transcript
+        entities = _extract_entities_from_transcript(transcript) if transcript else []
+
+        conn = _tips_db()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO bland_tips
+                   (call_id, transcript, summary, caller_number, call_length, entities, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'new', ?)""",
+                [call_id, transcript, summary, caller_number, call_length,
+                 json.dumps(entities), created_at]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._send_json({"status": "received", "call_id": call_id})
+
+    def _handle_get_bland_tips(self, parsed):
+        """Return all Bland AI call tips, optionally filtered by status.
+
+        Query params:
+          ?status=new|reviewed|investigating  — filter by tip status
+
+        Returns a JSON array of tip objects ordered by created_at DESC.
+        """
+        params = parse_qs(parsed.query)
+        status_filter = params.get("status", [None])[0]
+
+        conn = _tips_db()
+        try:
+            if status_filter:
+                rows = conn.execute(
+                    "SELECT * FROM bland_tips WHERE status = ? ORDER BY created_at DESC",
+                    [status_filter]
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM bland_tips ORDER BY created_at DESC"
+                ).fetchall()
+
+            tips = []
+            for row in rows:
+                tip = dict(row)
+                try:
+                    tip["entities"] = json.loads(tip["entities"]) if tip["entities"] else []
+                except (json.JSONDecodeError, TypeError):
+                    tip["entities"] = []
+                tips.append(tip)
+
+            self._send_json(tips)
+        finally:
+            conn.close()
 
     def _handle_health(self):
         """Health check endpoint — returns server status and active LLM backend.

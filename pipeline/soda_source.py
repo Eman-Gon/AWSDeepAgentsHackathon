@@ -196,16 +196,27 @@ def fetch_soda_dataset(
     where: Optional[str] = None,
     offset: int = 0,
 ) -> list[dict]:
-    """Fetch a single dataset from SODA API via HTTP."""
-    params: dict = {"$limit": limit, "$offset": offset}
-    if SODA_APP_TOKEN:
-        params["$$app_token"] = SODA_APP_TOKEN
-    if where:
-        params["$where"] = where
+    """Fetch a dataset from SODA API via HTTP, paginating in chunks of 10k."""
+    PAGE_SIZE = 10_000  # SODA handles 10k per request well
+    all_records: list[dict] = []
 
-    resp = requests.get(f"{SODA_BASE_URL}/{resource_id}.json", params=params, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
+    while len(all_records) < limit:
+        chunk_size = min(PAGE_SIZE, limit - len(all_records))
+        params: dict = {"$limit": chunk_size, "$offset": offset + len(all_records)}
+        if SODA_APP_TOKEN:
+            params["$$app_token"] = SODA_APP_TOKEN
+        if where:
+            params["$where"] = where
+
+        resp = requests.get(f"{SODA_BASE_URL}/{resource_id}.json", params=params, timeout=120)
+        resp.raise_for_status()
+        chunk = resp.json()
+        if not chunk:
+            break  # No more data
+        all_records.extend(chunk)
+        if len(chunk) < chunk_size:
+            break  # Last page
+    return all_records
 
 
 def fetch_all_datasets(limit: int = DEFAULT_RECORD_LIMIT) -> dict[str, list[dict]]:

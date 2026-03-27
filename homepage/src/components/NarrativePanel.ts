@@ -104,7 +104,9 @@ export class NarrativePanel extends Panel {
     this.setCount(index + 1);
     this.pulse();
 
-    this.content.scrollTop = this.content.scrollHeight;
+    // Scroll the section wrapper (which has overflow-y: auto), not the panel content
+    const scrollParent = this.el.closest('.right-section--timeline') ?? this.content;
+    scrollParent.scrollTop = scrollParent.scrollHeight;
   }
 
   private renderSources(sources: StepSource[]): HTMLElement {
@@ -175,7 +177,8 @@ export class NarrativePanel extends Panel {
       dots.appendChild(d);
     }
     this.listEl.appendChild(dots);
-    this.content.scrollTop = this.content.scrollHeight;
+    const scrollParent = this.el.closest('.right-section--timeline') ?? this.content;
+    scrollParent.scrollTop = scrollParent.scrollHeight;
   }
 
   hideTyping(): void {

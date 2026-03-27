@@ -366,8 +366,13 @@ html, body {
 
 .right-section--timeline {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Let the section handle scrolling, not the nested panel */
+.right-section--timeline .panel__content {
+  overflow: visible;
 }
 
 .right-section--findings {

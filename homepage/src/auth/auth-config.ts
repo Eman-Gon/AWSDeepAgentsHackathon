@@ -4,6 +4,7 @@ export interface Auth0AppConfig {
   redirectUri: string;
   audience?: string;
   claimsNamespace: string;
+  devBypass: boolean;
 }
 
 function readEnv(key: string): string | undefined {
@@ -19,13 +20,20 @@ function requireEnv(key: string): string {
   return value;
 }
 
+function normalizeAudience(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value === 'https://commons-api') return undefined;
+  return value;
+}
+
 export function getAuth0Config(): Auth0AppConfig {
   return {
     domain: requireEnv('VITE_AUTH0_DOMAIN'),
     clientId: requireEnv('VITE_AUTH0_CLIENT_ID'),
     redirectUri: requireEnv('VITE_AUTH0_REDIRECT_URI'),
-    audience: readEnv('VITE_AUTH0_AUDIENCE'),
+    audience: normalizeAudience(readEnv('VITE_AUTH0_AUDIENCE')),
     claimsNamespace: readEnv('VITE_AUTH0_CLAIMS_NAMESPACE') || 'https://commons.app',
+    devBypass: readEnv('VITE_AUTH_DEV_BYPASS') === 'true',
   };
 }
 

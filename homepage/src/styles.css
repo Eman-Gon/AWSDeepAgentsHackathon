@@ -851,6 +851,13 @@ html, body {
   background: var(--accent-hover);
 }
 
+.auth-shell__error {
+  margin-top: 12px;
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 @keyframes marker-pop {
   0% { transform: scale(0); opacity: 0; }
   60% { transform: scale(1.3); opacity: 1; }

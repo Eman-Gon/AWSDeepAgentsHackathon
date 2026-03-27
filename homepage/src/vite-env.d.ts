@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly VITE_AUTH0_AUDIENCE?: string;
   readonly VITE_AUTH0_REDIRECT_URI: string;
   readonly VITE_AUTH0_CLAIMS_NAMESPACE?: string;
+  readonly VITE_AUTH_DEV_BYPASS?: string;
 }
 
 declare module '*.css' {

@@ -36,3 +36,7 @@ services:
         sync: false          # must be set manually in Render dashboard
       - key: NODE_VERSION
         value: "20"
+      - key: TURSO_DATABASE_URL
+        sync: false          # set in dashboard: libsql://commons-graph-kvn8888.aws-us-east-1.turso.io
+      - key: TURSO_AUTH_TOKEN
+        sync: false          # set in dashboard (JWT token from: turso db tokens create commons-graph)

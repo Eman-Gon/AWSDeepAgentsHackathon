@@ -15,12 +15,20 @@ echo "=== [1/3] Installing Python dependencies ==="
 pip install -r requirements.txt
 
 echo "=== [2/3] Building SQLite knowledge graph ==="
-# The JSON data files are too large for git (~150MB), so we fetch fresh
-# data from the SF SODA API during build. The pipeline fetches, extracts
-# entities, and loads them into SQLite.
-# --sqlite: force SQLite output (no Aerospike needed in prod)
-# --limit 10000: fetch up to 10k records per dataset (keeps build fast)
-python -m pipeline.run_pipeline --sqlite --limit 10000
+# Skip SQLite rebuild when a Turso cloud database is configured.
+# In production on Render, we use the pre-populated Turso DB instead of
+# rebuilding from the SODA API on every deploy (which takes 10+ minutes).
+if [ -n "${TURSO_DATABASE_URL}" ]; then
+  echo "  TURSO_DATABASE_URL detected — skipping SQLite rebuild, using Turso cloud graph."
+  pip install libsql-experimental --quiet  # ensure the Turso driver is available
+else
+  # The JSON data files are too large for git (~150MB), so we fetch fresh
+  # data from the SF SODA API during build. The pipeline fetches, extracts
+  # entities, and loads them into SQLite.
+  # --sqlite: force SQLite output (no Aerospike needed in prod)
+  # --limit 10000: fetch up to 10k records per dataset (keeps build fast)
+  python -m pipeline.run_pipeline --sqlite --limit 10000
+fi
 
 echo "=== [3/3] Building frontend ==="
 cd homepage

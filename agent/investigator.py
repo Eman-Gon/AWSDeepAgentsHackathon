@@ -18,6 +18,23 @@ import re
 import time
 from typing import Any, Generator
 
+# Load .env file before anything else so GEMINI_API_KEY, TURSO_*, etc. are available.
+# python-dotenv is a lightweight dep that silently no-ops when .env doesn't exist.
+from dotenv import load_dotenv
+load_dotenv()
+
+# ── Overmind auto-instrumentation ────────────────────────────────────────
+# Overmind wraps the google-genai SDK to trace every LLM call for
+# observability, prompt optimization, and synthetic evaluation.
+# It is completely optional — if overmind-sdk isn't installed (or the key
+# isn't set), this block is a no-op and nothing changes.
+try:
+    import overmind  # type: ignore
+    if os.environ.get("OVERMIND_API_KEY"):
+        overmind.init(providers=["google"])
+except ImportError:
+    pass  # overmind-sdk not installed — tracing disabled, everything still works
+
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError

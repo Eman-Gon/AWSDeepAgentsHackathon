@@ -32,9 +32,33 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_graph.d
 # Separate from the main graph so we can open it read-write
 INV_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_investigations.db")
 
+# ── Turso cloud database config (production / Render) ─────────────────────
+# When TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set in the environment,
+# queries connect to the Turso cloud SQLite instead of the local file.
+# The libsql_experimental package uses an embedded-replica pattern:
+# it keeps a local cache at _TURSO_REPLICA and syncs with the remote on
+# each connection so queries run at SQLite speed over the local copy.
+_TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
+_TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+_TURSO_REPLICA = "/tmp/commons_graph_replica.db"  # local embedded replica cache
+
 
 def _connect() -> sqlite3.Connection:
-    """Open a read-only SQLite connection to the graph DB."""
+    """Open a connection to the graph DB.
+
+    Priority:
+    1. Turso cloud (embedded replica) — when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set
+    2. Local SQLite file — development fallback
+    """
+    if _TURSO_URL and _TURSO_TOKEN:
+        # Use the libsql_experimental embedded replica driver to connect to Turso
+        # This downloads a local copy and syncs it before every connection.
+        import libsql_experimental as libsql  # optional dep; installed in prod
+        conn = libsql.connect(_TURSO_REPLICA, sync_url=_TURSO_URL, auth_token=_TURSO_TOKEN)
+        conn.sync()                            # pull any new rows from the remote
+        conn.row_factory = sqlite3.Row         # dict-like column access
+        return conn
+    # Local development fallback: open the pre-seeded SQLite file read-only
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row          # dict-like access to columns
     return conn

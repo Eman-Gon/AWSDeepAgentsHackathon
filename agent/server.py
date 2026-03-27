@@ -35,7 +35,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from agent.investigator import investigate_stream
+# Load .env before importing the investigator so GEMINI_API_KEY, TURSO_*, etc. are available.
+from dotenv import load_dotenv
+load_dotenv()
+
+# ── Backend selection: TrueFoundry gateway or direct Gemini ──────────────
+# If TRUEFOUNDRY_BASE_URL is set in the environment, route all LLM calls
+# through TrueFoundry AI Gateway (gives token cost tracking + observability).
+# Otherwise fall back to direct Gemini (agent/investigator.py).
+_BACKEND = "gemini"
+if os.environ.get("TRUEFOUNDRY_BASE_URL"):
+    try:
+        from agent.truefoundry_backend import investigate_stream
+        _BACKEND = "truefoundry"
+    except ImportError:
+        from agent.investigator import investigate_stream
+else:
+    from agent.investigator import investigate_stream
 
 # ── CORS configuration ──────────────────────────────────────────────────
 # Allow requests from the Vite dev server and common deployment origins
@@ -254,12 +270,18 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             conn.close()
 
     def _handle_health(self):
-        """Health check endpoint — returns server status.
+        """Health check endpoint — returns server status and active LLM backend.
 
         Useful for load balancers, Render health checks, or verifying
         the server is running before sending investigation requests.
+        Reports which LLM backend is active so you can confirm TrueFoundry
+        routing is working before trusting the observability dashboard.
         """
-        self._send_json({"status": "ok", "service": "commons-agent"})
+        self._send_json({
+            "status": "ok",
+            "service": "commons-agent",
+            "llm_backend": _BACKEND,  # "gemini" or "truefoundry"
+        })
 
     def _handle_static(self, url_path: str):
         """Serve static files from the compiled Vite build directory.
@@ -401,7 +423,7 @@ class InvestigationHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Override default logging to add a prefix for clarity."""
-        print(f"[commons-agent] {args[0]} {args[1]} {args[2]}")
+        print(f"[commons-agent] {format % args}")
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000):

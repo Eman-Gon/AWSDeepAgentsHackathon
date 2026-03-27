@@ -295,6 +295,13 @@ class DashboardApp {
         },
         this.abortController.signal,
       );
+
+      // If the stream completed but yielded zero steps (e.g., Vercel
+      // placeholder returned JSON instead of SSE), fall back to mock data
+      if (stepIndex === 0 && !this.aborted) {
+        console.warn('[commons] Stream returned zero steps, falling back to demo data');
+        await this.investigateWithMockData(stepIndex);
+      }
     } catch (err) {
       // If the real backend is unavailable, fall back to mock data
       // so the demo still works without the Python server running

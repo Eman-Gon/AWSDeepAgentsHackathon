@@ -8,6 +8,7 @@ import { NarrativePanel } from '@/components/NarrativePanel';
 import { FindingsPanel } from '@/components/FindingsPanel';
 import { h as dom } from '@/utils/dom-utils';
 import { DEMO_INVESTIGATION } from '@/services/mock-data';
+import { streamInvestigation } from '@/services/investigation-stream';
 import { getAuth0Config } from '@/auth/auth-config';
 import type { InvestigationStatus, PatternAlert } from '@/types';
 import type { AuthSession, UserRole } from '@/auth/types';
@@ -119,6 +120,7 @@ class DashboardApp {
   private session: AuthSession;
   private status: InvestigationStatus = 'idle';
   private aborted = false;
+  private abortController: AbortController | null = null;
   private entityCount = 0;
   private connectionCount = 0;
   private patternCount = 0;
@@ -229,8 +231,11 @@ class DashboardApp {
 
   private async investigate(query: string): Promise<void> {
     if (!this.session.permissions.canInvestigate) return;
+
+    // Abort any in-progress investigation
     if (this.status === 'running') {
       this.aborted = true;
+      this.abortController?.abort();
     }
     this.aborted = false;
 
@@ -248,6 +253,66 @@ class DashboardApp {
 
     this.globePanel.flyToSF();
 
+    // Create an AbortController so we can cancel the SSE stream
+    // if the user starts a new investigation before this one finishes
+    this.abortController = new AbortController();
+    let stepIndex = 0;
+
+    try {
+      // Stream real investigation from the Python backend via SSE
+      await streamInvestigation(
+        query,
+        (step) => {
+          if (this.aborted) return;
+
+          // Process each AgentStep exactly like the mock data loop did
+          this.narrativePanel.addStep(step, stepIndex);
+          stepIndex++;
+
+          if (step.nodes && step.nodes.length > 0) {
+            this.globePanel.addNodes(step.nodes);
+            this.graphPanel.addNodes(step.nodes);
+            this.entityCount += step.nodes.length;
+            this.updatePills();
+          }
+          if (step.edges && step.edges.length > 0) {
+            this.globePanel.addEdges(step.edges);
+            this.graphPanel.addEdges(step.edges);
+            this.connectionCount += step.edges.length;
+            this.updatePills();
+          }
+          if (step.patterns && step.patterns.length > 0) {
+            for (const p of step.patterns) {
+              this.findingsPanel.addPattern(p);
+              this.findings.push(p);
+              this.patternCount++;
+            }
+            this.updatePills();
+          }
+        },
+        this.abortController.signal,
+      );
+    } catch (err) {
+      // If the real backend is unavailable, fall back to mock data
+      // so the demo still works without the Python server running
+      if (!this.aborted) {
+        console.warn('[commons] Backend unavailable, falling back to demo data:', err);
+        await this.investigateWithMockData(stepIndex);
+      }
+    }
+
+    if (!this.aborted) {
+      this.setStatus('complete');
+    }
+    this.searchPanel.setDisabled(false);
+    this.findingsPanel.setPublishBusy(false);
+  }
+
+  /**
+   * Fallback: play the mock investigation data when the Python backend
+   * is unreachable. Preserves the demo experience for presentations.
+   */
+  private async investigateWithMockData(startIndex: number): Promise<void> {
     const steps = DEMO_INVESTIGATION;
 
     for (let i = 0; i < steps.length; i++) {
@@ -262,7 +327,7 @@ class DashboardApp {
 
       if (this.aborted) break;
 
-      this.narrativePanel.addStep(step, i);
+      this.narrativePanel.addStep(step, startIndex + i);
 
       if (step.nodes && step.nodes.length > 0) {
         this.globePanel.addNodes(step.nodes);
@@ -285,12 +350,6 @@ class DashboardApp {
         this.updatePills();
       }
     }
-
-    if (!this.aborted) {
-      this.setStatus('complete');
-    }
-    this.searchPanel.setDisabled(false);
-    this.findingsPanel.setPublishBusy(false);
   }
 
   private decorateNavbar(root: HTMLElement): void {

@@ -16,7 +16,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Generator
 
 from google import genai
 from google.genai import types
@@ -30,6 +30,7 @@ from agent.graph_queries import (
     traverse_connections,
 )
 from agent.patterns import detect_patterns
+from agent.step_emitter import emit_step, emit_final_briefing
 
 # ── Gemini client setup ───────────────────────────────────────────────────
 # Requires GEMINI_API_KEY (or GOOGLE_API_KEY) in environment
@@ -355,3 +356,132 @@ def investigate(query: str, verbose: bool = False, max_turns: int = 15) -> str:
     except Exception:
         pass
     return "Investigation reached maximum tool call rounds. Please refine your query."
+
+
+def investigate_stream(
+    query: str, verbose: bool = False, max_turns: int = 15
+) -> Generator[dict, None, None]:
+    """
+    Streaming variant of investigate() that yields AgentStep dicts.
+
+    Instead of returning a single text briefing, this generator yields
+    one AgentStep dict per tool call (matching the frontend's AgentStep
+    TypeScript interface), followed by a final briefing step.
+
+    Each yielded dict has: {tool, message, nodes, edges, patterns, delay}
+
+    This powers the SSE endpoint so the frontend can progressively
+    render graph nodes, edges, narrative steps, and pattern alerts
+    as the agent works through its investigation.
+
+    Args:
+        query: Natural language investigation prompt
+        verbose: If True, print tool calls to stdout for debugging
+        max_turns: Max LLM ↔ tool call rounds (default 15)
+
+    Yields:
+        AgentStep dicts, one per tool call + one final briefing
+    """
+    # Create the Gemini client
+    client = genai.Client(api_key=_API_KEY)
+
+    # Start conversation with the user's investigation query
+    contents: list[types.Content] = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=query)],
+        )
+    ]
+
+    # Agentic loop: send to LLM → get tool calls → emit steps → repeat
+    for turn in range(max_turns):
+        # Call Gemini with tools available (with retry for rate limits)
+        response = _generate_with_retry(
+            client, contents, max_retries=3, verbose=verbose,
+        )
+
+        candidate = response.candidates[0]
+        parts = candidate.content.parts
+
+        # Collect function calls from the response
+        function_calls = [p for p in parts if p.function_call]
+
+        if not function_calls:
+            # No more tool calls — model is done, yield its text as final step
+            text_parts = [p.text for p in parts if p.text]
+            final_text = "\n".join(text_parts) if text_parts else "Investigation complete."
+            yield emit_final_briefing(final_text)
+            return
+
+        # Add the model's response to the conversation history
+        contents.append(candidate.content)
+
+        # Execute each function call, emit a step, and collect results
+        function_responses = []
+        for part in function_calls:
+            fc = part.function_call
+            tool_name = fc.name
+            tool_args = dict(fc.args) if fc.args else {}
+
+            if verbose:
+                print(f"  🔧 {tool_name}({json.dumps(tool_args, default=str)[:120]})")
+
+            # Execute the tool and get raw result
+            result_json = _call_tool(tool_name, tool_args)
+
+            if verbose:
+                preview = result_json[:200] + "..." if len(result_json) > 200 else result_json
+                print(f"     → {preview}")
+
+            # Emit an AgentStep for this tool call (sent to frontend via SSE)
+            step = emit_step(tool_name, tool_args, result_json)
+            yield step
+
+            # Collect the function response for the conversation
+            function_responses.append(
+                types.Part.from_function_response(
+                    name=tool_name,
+                    response={"result": result_json},
+                )
+            )
+
+        # Send tool results back to the model
+        contents.append(
+            types.Content(
+                role="user",
+                parts=function_responses,
+            )
+        )
+
+        # Nudge the model to wrap up when approaching max turns
+        if turn >= max_turns - 2:
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(
+                        text="You are running low on tool call budget. "
+                        "Please synthesize your findings into a final briefing NOW. "
+                        "Do NOT call any more tools—just write your summary."
+                    )],
+                )
+            )
+
+    # Hit max turns — ask for a final summary without tools
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(
+                text="Summarize all findings from the investigation above into a briefing."
+            )],
+        )
+    )
+    try:
+        response = _generate_with_retry(client, contents, max_retries=3, verbose=verbose)
+        candidate = response.candidates[0]
+        text_parts = [p.text for p in candidate.content.parts if p.text]
+        if text_parts:
+            yield emit_final_briefing("\n".join(text_parts))
+            return
+    except Exception:
+        pass
+    yield emit_final_briefing("Investigation reached maximum tool calls. Please refine your query.")

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Commons — Shared Investigation Intelligence</title>
+  <meta name="description" content="An agentic investigation platform that detects corruption patterns in public records." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="app-header" class="app-header">
+      <div class="app-header__brand">
+        <div class="app-header__logo">C</div>
+        <div>
+          <h1 class="app-header__title">Commons</h1>
+          <p class="app-header__subtitle">Shared Investigation Intelligence</p>
+        </div>
+      </div>
+      <div class="app-header__actions">
+        <button class="app-header__signin">Sign In</button>
+      </div>
+    </header>
+
+    <!-- Search row -->
+    <div id="search-row" class="search-row"></div>
+
+    <!-- Main: globe + graph + narrative -->
+    <div class="main-layout">
+      <div class="main-layout__left">
+        <!-- Globe on top, graph network below -->
+        <div id="globe-area" class="main-layout__globe"></div>
+        <div id="graph-area" class="main-layout__graph"></div>
+      </div>
+      <div id="main-right" class="main-layout__right"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

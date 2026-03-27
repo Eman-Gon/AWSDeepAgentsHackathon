@@ -1,4 +1,4 @@
-name: Deploy Next.js site to Pages
+name: Deploy Vite site to Pages
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
           cache: "npm"
           cache-dependency-path: homepage/package-lock.json
 
@@ -35,13 +35,13 @@ jobs:
       - name: Install dependencies
         run: cd homepage && npm ci
 
-      - name: Build with Next.js
+      - name: Build with Vite
         run: cd homepage && npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: homepage/out
+          path: homepage/dist
 
   deploy:
     environment:

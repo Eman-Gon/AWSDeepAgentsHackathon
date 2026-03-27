@@ -12,3 +12,7 @@ venv/
 
 # Environment
 .env
+
+
+
+node_modules/

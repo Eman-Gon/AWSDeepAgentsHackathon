@@ -14,11 +14,13 @@ set -e  # exit immediately on any error
 echo "=== [1/3] Installing Python dependencies ==="
 pip install -r requirements.txt
 
-echo "=== [2/3] Building SQLite knowledge graph from JSON data ==="
-# The pipeline reads data/*.json and creates data/commons_graph.db
-# --local: use pre-seeded JSON files (already in repo)
+echo "=== [2/3] Building SQLite knowledge graph ==="
+# The JSON data files are too large for git (~150MB), so we fetch fresh
+# data from the SF SODA API during build. The pipeline fetches, extracts
+# entities, and loads them into SQLite.
 # --sqlite: force SQLite output (no Aerospike needed in prod)
-python -m pipeline.run_pipeline --local --sqlite
+# --limit 10000: fetch up to 10k records per dataset (keeps build fast)
+python -m pipeline.run_pipeline --sqlite --limit 10000
 
 echo "=== [3/3] Building frontend ==="
 cd homepage

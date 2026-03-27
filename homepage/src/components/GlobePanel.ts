@@ -132,7 +132,7 @@ export class GlobePanel extends Panel {
     const Globe = GlobeModule.default;
 
     this.globe = new Globe(this.container)
-      .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-dark.jpg')
+      .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
       .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
       .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
       .backgroundColor('#04050a')

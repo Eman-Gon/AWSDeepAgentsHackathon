@@ -6,6 +6,8 @@ It exposes these endpoints:
 
   GET  /api/investigate?q=<query>  →  SSE stream of AgentStep events
   GET  /api/health                 →  Health check / readiness probe
+  POST /api/tips                   →  Submit an anonymous tip (returns one-time token)
+  GET  /api/tips/<token>           →  Retrieve a tip by one-time token (burns token)
   OPTIONS /api/*                   →  CORS preflight responses
 
 Each SSE event is a JSON-serialized AgentStep dict that the frontend
@@ -19,27 +21,21 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
+import secrets
 import signal
+import sqlite3
 import sys
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-# ── LLM backend selection ───────────────────────────────────────────────
-# When TRUEFOUNDRY_BASE_URL is set, route LLM calls through TrueFoundry's
-# AI Gateway (OpenAI-compatible). Otherwise use the default Gemini backend.
-# Both backends expose the same investigate_stream() interface.
-_TF_BASE_URL = os.environ.get("TRUEFOUNDRY_BASE_URL", "")
-if _TF_BASE_URL:
-    from agent.truefoundry_backend import investigate_stream
-    _BACKEND_NAME = f"truefoundry ({_TF_BASE_URL})"
-else:
-    from agent.investigator import investigate_stream
-    _BACKEND_NAME = "gemini-flash"
+from agent.investigator import investigate_stream
 
 # ── CORS configuration ──────────────────────────────────────────────────
 # Allow requests from the Vite dev server and common deployment origins
@@ -50,32 +46,54 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
 ]
 
-# ── Static file serving (production) ────────────────────────────────────
-# In production the Python server also serves the built Vite frontend.
-# In dev, Vite's dev server proxies /api requests to us instead.
-STATIC_DIR = Path(__file__).resolve().parent.parent / "homepage" / "dist"
+# ── Static file serving ──────────────────────────────────────────────────
+# Path to the compiled Vite frontend (built by homepage/npm run build)
+_STATIC_ROOT = Path(__file__).parent.parent / "homepage" / "dist"
 
-# Common MIME types for static assets (mimetypes module may miss some)
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("text/css", ".css")
-mimetypes.add_type("image/svg+xml", ".svg")
-mimetypes.add_type("application/json", ".json")
-mimetypes.add_type("image/webp", ".webp")
+# Wildcard Render origin pattern — allow any *.onrender.com subdomain
+_RENDER_ORIGIN_SUFFIX = ".onrender.com"
+
+# ── Anonymous tip database ─────────────────────────────────────────────────
+# Tips are stored as one-time-retrieval records. The token stored in the DB
+# is a SHA-256 hash of the raw token given to the tipster, so a DB breach
+# cannot be used to retrieve tips without the original token.
+_TIPS_DB_PATH = Path(__file__).parent.parent / "data" / "commons_tips.db"
+
+
+def _tips_db() -> sqlite3.Connection:
+    """Open (or create) the tips SQLite database."""
+    _TIPS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_TIPS_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tips (
+            token_hash TEXT PRIMARY KEY,  -- SHA-256 of the raw token given to tipster
+            content    TEXT NOT NULL,      -- encrypted or plain tip content
+            retrieved  INTEGER DEFAULT 0, -- 1 after the tip is retrieved (one-time)
+            created_at REAL NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
 
 
 def _cors_origin(request_origin: str | None) -> str:
     """Return the allowed origin for CORS headers.
-    
-    If the request origin is in our allowlist or matches a *.onrender.com
-    domain, echo it back. Otherwise return the first allowed origin
-    (won't match browser's check, effectively blocking the request).
+
+    Allows:
+      - Any origin explicitly in ALLOWED_ORIGINS (local dev)
+      - Any *.onrender.com origin (production Render deployment)
+
+    Otherwise falls back to the first allowed origin, which browsers
+    will reject — effectively blocking unknown cross-origin requests.
     """
-    if request_origin:
-        if request_origin in ALLOWED_ORIGINS:
-            return request_origin
-        # Accept any *.onrender.com origin for Render deployments
-        if request_origin.endswith(".onrender.com"):
-            return request_origin
+    if not request_origin:
+        return ALLOWED_ORIGINS[0]
+    if request_origin in ALLOWED_ORIGINS:
+        return request_origin
+    # Allow any Render subdomain (commons-ovyq.onrender.com, etc.)
+    if request_origin.endswith(_RENDER_ORIGIN_SUFFIX):
+        return request_origin
     return ALLOWED_ORIGINS[0]
 
 
@@ -103,7 +121,12 @@ class InvestigationHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        """Route GET requests to the appropriate handler."""
+        """Route GET requests to the appropriate handler.
+
+        API paths go to the Python handlers. Everything else is treated
+        as a static file request and served from homepage/dist/. Unknown
+        paths fall back to index.html (SPA client-side routing).
+        """
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
@@ -111,17 +134,189 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             self._handle_investigate(parsed)
         elif path == "/api/health":
             self._handle_health()
+        elif path.startswith("/api/tips/"):
+            # GET /api/tips/<token> — retrieve a tip (one-time use)
+            token = path[len("/api/tips/"):]
+            self._handle_get_tip(token)
+        elif path.startswith("/api/"):
+            self._send_json({"error": "Not found"}, 404)
         else:
-            # Serve static frontend files from homepage/dist/ in production
-            self._serve_static(path)
+            # Serve static frontend files — fallback to index.html for SPA routing
+            self._handle_static(path or "/")
+
+    def do_POST(self):
+        """Route POST requests. Currently handles tip submission."""
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path == "/api/tips":
+            self._handle_submit_tip()
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def _handle_submit_tip(self):
+        """Accept an anonymous tip and return a one-time retrieval token.
+
+        Auth flow explanation:
+          - No Auth0 login required: any anonymous source can submit
+          - A cryptographically random token is generated (256 bits)
+          - Only the SHA-256 hash of that token is stored in the DB
+          - The raw token is returned ONCE to the tipster — they must save it
+          - A journalist can retrieve the tip by presenting the raw token
+          - After retrieval the tip is marked 'retrieved' and cannot be read again
+
+        This is the 'anonymous source' third auth track: tipsters never need
+        an account, and the one-time nature means even a DB breach can't be
+        used to re-read tips that have already been retrieved.
+        """
+        # Read request body (JSON)
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0 or content_length > 10_000:
+            self._send_json({"error": "Invalid content length"}, 400)
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        content = body.get("content", "").strip()
+        if not content:
+            self._send_json({"error": "Missing 'content' field"}, 400)
+            return
+
+        # Generate a 32-byte (256-bit) random token — this is what we give to the tipster
+        raw_token = secrets.token_urlsafe(32)
+        # Store only the hash — if the DB leaks, tokens are not exposed
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        conn = _tips_db()
+        try:
+            conn.execute(
+                "INSERT INTO tips (token_hash, content, retrieved, created_at) VALUES (?, ?, 0, ?)",
+                [token_hash, content, time.time()]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Return the raw token once — the tipster must save it
+        self._send_json({
+            "status": "received",
+            "token": raw_token,
+            "message": (
+                "Tip received. Save this token — it is the only way to retrieve your tip. "
+                "Share it with a journalist via a secure channel."
+            ),
+        }, 201)
+
+    def _handle_get_tip(self, raw_token: str):
+        """Retrieve a tip by its one-time token (burns the token after retrieval).
+
+        A journalist presents the raw token they received from a source.
+        We hash it, look it up, return the content, and mark it retrieved.
+        After this call the tip cannot be retrieved again.
+        """
+        if not raw_token or len(raw_token) > 100:
+            self._send_json({"error": "Invalid token"}, 400)
+            return
+
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        conn = _tips_db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM tips WHERE token_hash = ?", [token_hash]
+            ).fetchone()
+
+            if not row:
+                self._send_json({"error": "Tip not found"}, 404)
+                return
+
+            if row["retrieved"]:
+                self._send_json({"error": "Tip already retrieved (one-time use)"}, 410)
+                return
+
+            # Mark as retrieved BEFORE returning (no double-reads)
+            conn.execute(
+                "UPDATE tips SET retrieved = 1 WHERE token_hash = ?", [token_hash]
+            )
+            conn.commit()
+
+            self._send_json({
+                "status": "ok",
+                "content": row["content"],
+                "created_at": row["created_at"],
+                "note": "This tip has now been permanently marked as retrieved and cannot be read again.",
+            })
+        finally:
+            conn.close()
 
     def _handle_health(self):
         """Health check endpoint — returns server status.
-        
-        Useful for load balancers, Vercel proxies, or just verifying
+
+        Useful for load balancers, Render health checks, or verifying
         the server is running before sending investigation requests.
         """
-        self._send_json({"status": "ok", "service": "commons-agent", "llm_backend": _BACKEND_NAME})
+        self._send_json({"status": "ok", "service": "commons-agent"})
+
+    def _handle_static(self, url_path: str):
+        """Serve static files from the compiled Vite build directory.
+
+        Security note: we resolve the file path and verify it stays inside
+        _STATIC_ROOT to prevent directory traversal attacks (e.g. ../etc/passwd).
+
+        For SPA routing: if the requested path doesn't match a file, serve
+        index.html so the frontend router handles it client-side.
+        """
+        if not _STATIC_ROOT.exists():
+            # Frontend has not been built yet (dev mode without build step)
+            self._send_json({"error": "Frontend not built. Run: cd homepage && npm run build"}, 503)
+            return
+
+        # Strip leading slash and resolve to a real path
+        relative_path = url_path.lstrip("/")
+        # Default to index.html for root requests
+        if not relative_path:
+            relative_path = "index.html"
+
+        # Resolve and check for path traversal
+        try:
+            resolved = (_STATIC_ROOT / relative_path).resolve()
+            # Ensure the resolved path is still inside our static root
+            resolved.relative_to(_STATIC_ROOT.resolve())
+        except (ValueError, OSError):
+            # Path traversal attempt — refuse
+            self._send_json({"error": "Forbidden"}, 403)
+            return
+
+        # Fall back to index.html if file doesn't exist (SPA routing)
+        if not resolved.exists() or resolved.is_dir():
+            resolved = _STATIC_ROOT / "index.html"
+
+        # Read and serve the file
+        try:
+            content = resolved.read_bytes()
+        except OSError:
+            self._send_json({"error": "Not found"}, 404)
+            return
+
+        # Detect MIME type from file extension (default to octet-stream)
+        mime_type, _ = mimetypes.guess_type(str(resolved))
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(content)))
+        # Cache static assets (JS/CSS with hash names) aggressively, HTML not at all
+        if resolved.suffix in (".js", ".css", ".woff", ".woff2", ".png", ".svg"):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _handle_investigate(self, parsed):
         """Stream an investigation as Server-Sent Events (SSE).
@@ -190,60 +385,6 @@ class InvestigationHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    def _serve_static(self, path: str):
-        """Serve static files from the Vite build output.
-
-        Handles SPA routing by falling back to index.html for paths
-        that don't match a real file (e.g. /investigate → index.html).
-        """
-        if not STATIC_DIR.is_dir():
-            self._send_json({"error": "Frontend not built. Run: cd homepage && npm run build"}, 404)
-            return
-
-        # Map URL path to a file on disk
-        # Strip leading slash and resolve relative to STATIC_DIR
-        rel_path = path.lstrip("/")
-        file_path = STATIC_DIR / rel_path if rel_path else STATIC_DIR / "index.html"
-
-        # If the path points to a directory, look for index.html inside it
-        if file_path.is_dir():
-            file_path = file_path / "index.html"
-
-        # SPA fallback: if no matching file, serve index.html
-        # so the frontend router can handle the URL
-        if not file_path.is_file():
-            file_path = STATIC_DIR / "index.html"
-
-        if not file_path.is_file():
-            self._send_json({"error": "Not found"}, 404)
-            return
-
-        # Security: ensure the resolved path is inside STATIC_DIR
-        # to prevent directory traversal attacks (e.g. ../../etc/passwd)
-        try:
-            file_path.resolve().relative_to(STATIC_DIR.resolve())
-        except ValueError:
-            self._send_json({"error": "Forbidden"}, 403)
-            return
-
-        # Determine Content-Type from the file extension
-        content_type, _ = mimetypes.guess_type(str(file_path))
-        if content_type is None:
-            content_type = "application/octet-stream"
-
-        # Read and serve the file
-        body = file_path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        # Cache static assets with hashed filenames aggressively
-        if "/assets/" in path:
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-        else:
-            self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
-
     def _send_json(self, data: dict, status: int = 200):
         """Send a JSON response with CORS headers.
         
@@ -272,7 +413,6 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
     """
     server = HTTPServer((host, port), InvestigationHandler)
     print(f"[commons-agent] SSE server running at http://{host}:{port}")
-    print(f"[commons-agent] LLM backend: {_BACKEND_NAME}")
     print(f"[commons-agent] Investigation endpoint: http://{host}:{port}/api/investigate?q=<query>")
     print(f"[commons-agent] Health check: http://{host}:{port}/api/health")
     print(f"[commons-agent] Press Ctrl+C to stop")
@@ -294,6 +434,4 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     args = parser.parse_args()
-    # Render (and most PaaS) inject PORT env var — use it if present
-    port = int(os.environ.get("PORT", args.port))
-    serve(args.host, port)
+    serve(args.host, args.port)

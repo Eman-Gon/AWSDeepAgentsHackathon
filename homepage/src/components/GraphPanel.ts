@@ -24,9 +24,6 @@ export class GraphPanel extends Panel {
   private rootNodeId: string | null = null;
   private userNavigated = false;
   private hasAutoFit = false;
-  private ready = false;
-  private pendingNodes: GraphNode[] = [];
-  private pendingEdges: GraphEdge[] = [];
 
   constructor() {
     super({
@@ -144,9 +141,6 @@ export class GraphPanel extends Panel {
 
     this.network.once('stabilizationIterationsDone', () => {
       this.fit(true);
-      // Disable physics after the first layout so subsequent node additions
-      // don't cause the graph to rearrange and visually "jump"
-      this.network?.setOptions({ physics: { enabled: false } });
     });
     this.network.on('zoom', () => {
       this.userNavigated = true;
@@ -154,23 +148,10 @@ export class GraphPanel extends Panel {
     this.network.on('dragStart', () => {
       this.userNavigated = true;
     });
-
-    this.ready = true;
-    if (this.pendingNodes.length > 0) {
-      this.addNodes(this.pendingNodes);
-      this.pendingNodes = [];
-    }
-    if (this.pendingEdges.length > 0) {
-      this.addEdges(this.pendingEdges);
-      this.pendingEdges = [];
-    }
   }
 
   addNodes(nodes: GraphNode[]): void {
-    if (!this.ready || !this.nodeDataSet) {
-      this.pendingNodes.push(...nodes);
-      return;
-    }
+    if (!this.nodeDataSet) return;
 
     // Clear empty state on first add
     const empty = this.container.querySelector('.graph-panel__empty');
@@ -196,13 +177,11 @@ export class GraphPanel extends Panel {
     }
     this.updateStats();
     this.applyTreeLevels();
+    this.fit();
   }
 
   addEdges(edges: GraphEdge[]): void {
-    if (!this.ready || !this.edgeDataSet) {
-      this.pendingEdges.push(...edges);
-      return;
-    }
+    if (!this.edgeDataSet) return;
 
     const existing = new Set(this.edgeDataSet.getIds());
     const toAdd = edges
@@ -214,13 +193,12 @@ export class GraphPanel extends Panel {
     }
     this.applyTreeLevels();
     this.updateStats();
+    this.fit();
   }
 
   clear(): void {
     this.nodeDataSet?.clear();
     this.edgeDataSet?.clear();
-    this.pendingNodes = [];
-    this.pendingEdges = [];
     this.nodeCount = 0;
     this.edgeCount = 0;
     this.rootNodeId = null;
@@ -232,11 +210,7 @@ export class GraphPanel extends Panel {
 
   private fit(force = false): void {
     if (!this.network) return;
-    // Only auto-fit once (the first batch) — repeated fit animations
-    // during streaming look jarring. After the first fit, only fit
-    // if explicitly forced (e.g., after stabilization) or userNavigated is false
-    // and we haven't auto-fit yet.
-    if (!force && (this.userNavigated || this.hasAutoFit)) return;
+    if (!force && this.userNavigated) return;
 
     this.network.fit({
       animation: { duration: 500, easingFunction: 'easeInOutQuad' },

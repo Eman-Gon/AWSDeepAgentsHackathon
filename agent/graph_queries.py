@@ -10,23 +10,59 @@ SQLite schema (populated by pipeline/aerospike_loader.py):
             sources (JSON), first_seen, last_updated, flagged (JSON)
   edges:    edge_id TEXT PK, source_entity, target_entity, relationship,
             properties (JSON), source_dataset, confidence REAL
+
+Investigations schema (commons_investigations.db — write-enabled):
+  investigations: id TEXT PK, title, summary, entity_ids (JSON), findings (JSON),
+                  status TEXT, created_at REAL, published_at REAL
 """
 
 import json
 import os
 import sqlite3
+import time
+import uuid
 from typing import Optional
 
 from thefuzz import fuzz
 
-# ── Path to the pre-seeded SQLite graph database ──────────────────────────
+# ── Path to the pre-seeded SQLite graph database (read-only) ──────────────
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_graph.db")
+
+# ── Path to the writable investigations database ──────────────────────────
+# Separate from the main graph so we can open it read-write
+INV_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_investigations.db")
 
 
 def _connect() -> sqlite3.Connection:
     """Open a read-only SQLite connection to the graph DB."""
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row          # dict-like access to columns
+    return conn
+
+
+def _connect_investigations() -> sqlite3.Connection:
+    """Open a read-write SQLite connection to the investigations DB.
+
+    Creates the investigations table if it doesn't exist yet.
+    This is a separate database so the main graph stays read-only.
+    """
+    os.makedirs(os.path.dirname(INV_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(INV_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    # Create investigations table on first use
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS investigations (
+            id          TEXT PRIMARY KEY,
+            title       TEXT NOT NULL,
+            summary     TEXT NOT NULL,
+            entity_ids  TEXT NOT NULL DEFAULT '[]',  -- JSON array of entity_ids
+            findings    TEXT NOT NULL DEFAULT '[]',  -- JSON array of finding dicts
+            status      TEXT NOT NULL DEFAULT 'draft',  -- draft | published
+            created_at  REAL NOT NULL,
+            published_at REAL
+        )
+    """)
+    conn.commit()
     return conn
 
 
@@ -331,5 +367,277 @@ def aggregate_query(
             }
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool 6: check_campaign_finance — look up donations by entity name
+# ──────────────────────────────────────────────────────────────────────────
+
+def check_campaign_finance(
+    entity_name: str,
+    direction: str = "both",
+    limit: int = 20,
+) -> dict:
+    """
+    Search the knowledge graph for campaign finance records linked to an entity.
+
+    Finds donor→candidate relationships (DONATED_TO edges) where either
+    the source or target entity name matches the search term.
+
+    Args:
+        entity_name: Name of donor or recipient to look up (fuzzy matched).
+        direction: "donor" (entity is donor), "recipient" (entity received money),
+                   or "both" (default — search either side).
+        limit: Max results.
+
+    Returns:
+        Dict with total_found, top_donations (list), and summary text.
+    """
+    conn = _connect()
+    try:
+        # Find matching entity IDs (by name fuzzy match)
+        name_rows = conn.execute(
+            "SELECT entity_id, name FROM entities WHERE name LIKE ? LIMIT 200",
+            [f"%{entity_name}%"]
+        ).fetchall()
+
+        # Score to get best matches
+        scored = sorted(
+            name_rows,
+            key=lambda r: fuzz.token_sort_ratio(entity_name.upper(), r["name"].upper()),
+            reverse=True,
+        )[:20]  # take top 20 candidate IDs to query edges for
+
+        if not scored:
+            return {"total_found": 0, "top_donations": [], "summary": "No matching entities found."}
+
+        entity_ids = [r["entity_id"] for r in scored]
+        placeholders = ",".join("?" * len(entity_ids))
+
+        donations = []
+
+        if direction in ("donor", "both"):
+            # Entity is the donor (source of DONATED_TO edge)
+            rows = conn.execute(
+                f"SELECT e.*, en_t.name as target_name FROM edges e "
+                f"JOIN entities en_t ON e.target_entity = en_t.entity_id "
+                f"WHERE e.source_entity IN ({placeholders}) AND e.relationship = 'DONATED_TO' "
+                f"LIMIT ?",
+                entity_ids + [limit]
+            ).fetchall()
+            for r in rows:
+                props = json.loads(r["properties"] or "{}")
+                donations.append({
+                    "direction": "donor",
+                    "donor_id": r["source_entity"],
+                    "recipient": r["target_name"],
+                    "amount": props.get("amount") or props.get("amount_str", "unknown"),
+                    "date": props.get("date") or props.get("transaction_date", "unknown"),
+                    "dataset": r["source_dataset"],
+                })
+
+        if direction in ("recipient", "both"):
+            # Entity is the recipient (target of DONATED_TO edge)
+            rows = conn.execute(
+                f"SELECT e.*, en_s.name as source_name FROM edges e "
+                f"JOIN entities en_s ON e.source_entity = en_s.entity_id "
+                f"WHERE e.target_entity IN ({placeholders}) AND e.relationship = 'DONATED_TO' "
+                f"LIMIT ?",
+                entity_ids + [limit]
+            ).fetchall()
+            for r in rows:
+                props = json.loads(r["properties"] or "{}")
+                donations.append({
+                    "direction": "recipient",
+                    "donor": r["source_name"],
+                    "recipient_id": r["target_entity"],
+                    "amount": props.get("amount") or props.get("amount_str", "unknown"),
+                    "date": props.get("date") or props.get("transaction_date", "unknown"),
+                    "dataset": r["source_dataset"],
+                })
+
+        total = len(donations)
+        summary = (
+            f"Found {total} campaign finance records matching '{entity_name}'. "
+            + (f"Top donation: {donations[0]['amount']}" if donations else "No donations found.")
+        )
+        return {"total_found": total, "top_donations": donations[:limit], "summary": summary}
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool 7: file_investigation — save an investigation to the DB
+# ──────────────────────────────────────────────────────────────────────────
+
+def file_investigation(
+    title: str,
+    summary: str,
+    entity_ids: list,
+    findings: Optional[list] = None,
+) -> dict:
+    """
+    Save an investigation and its findings to the investigations database.
+
+    Use this to persist a completed investigation so it can be retrieved
+    later with check_prior_investigations or published with publish_finding.
+
+    Args:
+        title: Short descriptive title (e.g. "Recology SF Contract Patterns").
+        summary: Full narrative summary of the investigation.
+        entity_ids: List of entity_ids that are central to this investigation.
+        findings: Optional list of finding dicts with keys: description, severity,
+                  confidence, evidence. (Defaults to empty list.)
+
+    Returns:
+        Dict with investigation_id and status ("filed").
+    """
+    investigation_id = f"inv_{uuid.uuid4().hex[:12]}"
+    conn = _connect_investigations()
+    try:
+        conn.execute(
+            """INSERT INTO investigations (id, title, summary, entity_ids, findings, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'draft', ?)""",
+            [
+                investigation_id,
+                title,
+                summary,
+                json.dumps(entity_ids or []),
+                json.dumps(findings or []),
+                time.time(),
+            ]
+        )
+        conn.commit()
+        return {
+            "investigation_id": investigation_id,
+            "status": "filed",
+            "title": title,
+            "message": f"Investigation '{title}' saved with ID {investigation_id}.",
+        }
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool 8: check_prior_investigations — query previously filed investigations
+# ──────────────────────────────────────────────────────────────────────────
+
+def check_prior_investigations(
+    entity_id: Optional[str] = None,
+    keyword: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Search for previously filed investigations in the database.
+
+    Useful to avoid duplicating work and to find related prior investigations
+    that may contain useful context about the current target.
+
+    Args:
+        entity_id: Find investigations that include this specific entity_id.
+        keyword: Find investigations whose title or summary contains this text.
+        limit: Max results (default 10).
+
+    Returns:
+        List of investigation dicts with id, title, summary, status, created_at.
+    """
+    conn = _connect_investigations()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, summary, entity_ids, status, created_at, published_at "
+            "FROM investigations ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            # Filter by entity_id if provided
+            if entity_id:
+                ids = json.loads(row["entity_ids"] or "[]")
+                if entity_id not in ids:
+                    continue
+            # Filter by keyword if provided
+            if keyword:
+                kw = keyword.lower()
+                if kw not in row["title"].lower() and kw not in row["summary"].lower():
+                    continue
+            results.append({
+                "investigation_id": row["id"],
+                "title": row["title"],
+                "summary": row["summary"][:300] + "..." if len(row["summary"]) > 300 else row["summary"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "published_at": row["published_at"],
+            })
+            if len(results) >= limit:
+                break
+
+        return results
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tool 9: publish_finding — mark a filed investigation as published
+# ──────────────────────────────────────────────────────────────────────────
+
+def publish_finding(
+    investigation_id: str,
+    public_title: Optional[str] = None,
+    public_summary: Optional[str] = None,
+) -> dict:
+    """
+    Publish a filed investigation to the public record.
+
+    Changes the investigation status from 'draft' to 'published' and
+    optionally updates the title/summary for public presentation.
+    A journalist with editor role must authorize the actual HTTP publish
+    via the /api/publish endpoint; this tool marks intent in the DB.
+
+    Args:
+        investigation_id: The investigation_id returned by file_investigation.
+        public_title: Optional refined title for public display.
+        public_summary: Optional refined summary for public display.
+
+    Returns:
+        Dict with status ('published' or 'not_found') and the investigation details.
+    """
+    conn = _connect_investigations()
+    try:
+        row = conn.execute(
+            "SELECT * FROM investigations WHERE id = ?", [investigation_id]
+        ).fetchone()
+
+        if not row:
+            return {"status": "not_found", "message": f"Investigation {investigation_id} not found."}
+
+        update_fields: list = []
+        update_vals: list = []
+
+        update_fields.append("status = 'published'")
+        update_fields.append("published_at = ?")
+        update_vals.append(time.time())
+
+        if public_title:
+            update_fields.append("title = ?")
+            update_vals.append(public_title)
+        if public_summary:
+            update_fields.append("summary = ?")
+            update_vals.append(public_summary)
+
+        update_vals.append(investigation_id)
+        conn.execute(
+            f"UPDATE investigations SET {', '.join(update_fields)} WHERE id = ?",
+            update_vals
+        )
+        conn.commit()
+
+        return {
+            "status": "published",
+            "investigation_id": investigation_id,
+            "title": public_title or row["title"],
+            "message": f"Investigation '{public_title or row['title']}' is now published.",
+        }
     finally:
         conn.close()

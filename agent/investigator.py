@@ -16,27 +16,7 @@ import json
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any, Generator
-
-# Load .env from project root so GEMINI_API_KEY and other secrets are available
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
-# Overmind SDK — auto-instruments google-genai for observability.
-# Traces every LLM call (latency, tokens, cost) to the Overmind dashboard.
-# Must be initialized BEFORE importing the genai client.
-try:
-    from overmind_sdk import init as _overmind_init, get_tracer as _overmind_tracer, set_tag as _overmind_tag
-
-    _overmind_init(
-        service_name="commons-investigation-agent",
-        environment=os.environ.get("OVERMIND_ENVIRONMENT", "development"),
-        providers=["google"],  # instrument google-genai calls
-    )
-    _OVERMIND_ENABLED = True
-except Exception:
-    _OVERMIND_ENABLED = False
 
 from google import genai
 from google.genai import types
@@ -44,8 +24,12 @@ from google.genai.errors import ClientError
 
 from agent.graph_queries import (
     aggregate_query,
+    check_campaign_finance,
+    check_prior_investigations,
+    file_investigation,
     get_edges_for_entity,
     get_entity_details,
+    publish_finding,
     search_entity,
     traverse_connections,
 )
@@ -202,6 +186,86 @@ TOOL_DECLARATIONS = types.Tool(
                 },
             ),
         ),
+        types.FunctionDeclaration(
+            name="check_campaign_finance",
+            description=(
+                "Search campaign finance records for an entity by name. "
+                "Returns DONATED_TO edges — who they donated to and who donated to them. "
+                "Use this to find pay-to-play patterns: did a company's executives donate "
+                "to a politician who later awarded them contracts?"
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "entity_name": types.Schema(type="STRING", description="Name of donor or recipient to look up"),
+                    "direction": types.Schema(
+                        type="STRING",
+                        description="'donor' (entity gave money), 'recipient' (entity received money), or 'both' (default)",
+                    ),
+                    "limit": types.Schema(type="INTEGER", description="Max results (default 20)"),
+                },
+                required=["entity_name"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="check_prior_investigations",
+            description=(
+                "Search the database for previously filed investigations. "
+                "Use this at the start of an investigation to check if the target "
+                "has been investigated before and what was found."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "entity_id": types.Schema(type="STRING", description="Find investigations involving this entity_id"),
+                    "keyword": types.Schema(type="STRING", description="Search by keyword in title or summary"),
+                    "limit": types.Schema(type="INTEGER", description="Max results (default 10)"),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="file_investigation",
+            description=(
+                "Save the current investigation and its findings to the database. "
+                "Call this AFTER you have gathered enough evidence and written your final briefing. "
+                "The investigation can then be published with publish_finding."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "title": types.Schema(type="STRING", description="Short descriptive title"),
+                    "summary": types.Schema(type="STRING", description="Full narrative summary of findings"),
+                    "entity_ids": types.Schema(
+                        type="ARRAY",
+                        items=types.Schema(type="STRING"),
+                        description="List of entity_ids central to this investigation",
+                    ),
+                    "findings": types.Schema(
+                        type="ARRAY",
+                        items=types.Schema(type="OBJECT"),
+                        description="List of finding dicts with keys: description, severity, confidence, evidence",
+                    ),
+                },
+                required=["title", "summary", "entity_ids"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="publish_finding",
+            description=(
+                "Mark a filed investigation as published. "
+                "Use this only after the investigation is filed and you want to make it public. "
+                "Optionally provide a refined public title and summary."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "investigation_id": types.Schema(type="STRING", description="The investigation_id from file_investigation"),
+                    "public_title": types.Schema(type="STRING", description="Optional refined title for public display"),
+                    "public_summary": types.Schema(type="STRING", description="Optional refined summary for public display"),
+                },
+                required=["investigation_id"],
+            ),
+        ),
     ]
 )
 
@@ -214,6 +278,10 @@ TOOL_DISPATCH: dict[str, Any] = {
     "get_edges_for_entity": get_edges_for_entity,
     "detect_patterns": detect_patterns,
     "aggregate_query": aggregate_query,
+    "check_campaign_finance": check_campaign_finance,
+    "check_prior_investigations": check_prior_investigations,
+    "file_investigation": file_investigation,
+    "publish_finding": publish_finding,
 }
 
 
@@ -280,10 +348,6 @@ def investigate(query: str, verbose: bool = False, max_turns: int = 15) -> str:
     Returns:
         The agent's final investigation briefing as a string.
     """
-    # Tag this investigation in Overmind for per-query observability
-    if _OVERMIND_ENABLED:
-        _overmind_tag("investigation.query", query[:200])
-
     # Create the Gemini client
     client = genai.Client(api_key=_API_KEY)
 
@@ -407,10 +471,6 @@ def investigate_stream(
     Yields:
         AgentStep dicts, one per tool call + one final briefing
     """
-    # Tag this investigation in Overmind for per-query observability
-    if _OVERMIND_ENABLED:
-        _overmind_tag("investigation.query", query[:200])
-
     # Create the Gemini client
     client = genai.Client(api_key=_API_KEY)
 

@@ -320,12 +320,12 @@ export class GlobePanel extends Panel {
   }
 
   flyToSF(): void {
-    if (!this.globe) return;
-    // Just stop auto-rotate when investigation starts — no zoom animation.
-    // The globe already starts pointed at SF so zooming is unnecessary
-    // and feels jarring when repeated.
-    const controls = this.globe.controls();
-    controls.autoRotate = false;
+    if (this.globe) {
+      this.globe.pointOfView({ lat: 37.77, lng: -122.42, altitude: 0.32 }, 1800);
+      // Stop auto-rotate when investigating
+      const controls = this.globe.controls();
+      controls.autoRotate = false;
+    }
   }
 
   clear(): void {

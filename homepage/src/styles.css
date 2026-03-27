@@ -357,21 +357,6 @@ html, body {
 
 .right-section--timeline {
   flex: 1;
-  position: relative;
-  overflow: hidden;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-/* Force the panel to fill the section via absolute positioning
-   so it gets a real height rather than relying on the flex chain */
-.right-section--timeline > .panel {
-  position: absolute;
-  inset: 0;
-}
-
-.right-section--entities {
-  flex: 1;
-  min-height: 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -388,7 +373,6 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 0;
 }
 
 .panel__header {
@@ -422,7 +406,7 @@ html, body {
 
 .panel__content {
   flex: 1;
-  overflow-y: scroll;
+  overflow-y: auto;
   min-height: 0;
 }
 
@@ -614,99 +598,6 @@ html, body {
 @keyframes bounce {
   0%, 80%, 100% { transform: translateY(0); }
   40% { transform: translateY(-6px); }
-}
-
-
-/* ================================================================
-   Entities Panel
-   ================================================================ */
-.entities__empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-dim);
-  font-size: 12px;
-  padding: 24px;
-  text-align: center;
-}
-
-.entities__list {
-  padding: 8px 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.entities__group-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0 4px;
-}
-
-.entities__risk-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.entities__risk-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-
-.entities__risk-count {
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--bg-elevated);
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border-radius: 100px;
-  margin-left: auto;
-}
-
-.entities__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
-  transition: background 0.12s;
-}
-.entities__item:hover {
-  background: var(--bg-elevated);
-}
-
-.entities__type-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.entities__item-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.entities__item-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.entities__item-meta {
-  font-size: 10px;
-  color: var(--text-dim);
 }
 
 
@@ -929,20 +820,15 @@ html, body {
 .globe-panel__canvas {
   position: absolute;
   inset: 0;
-  overflow: hidden;
 }
 
 .globe-panel__canvas canvas {
   outline: none;
 }
 
-/* Contain the globe.gl scene so it never pushes layout */
-.globe-panel__canvas .scene-container,
-.globe-panel__canvas > div {
+.globe-panel__canvas .scene-container {
   width: 100% !important;
   height: 100% !important;
-  position: absolute !important;
-  inset: 0 !important;
 }
 
 .navbar__identity {
@@ -1008,13 +894,6 @@ html, body {
 
 .auth-shell__button:hover {
   background: var(--accent-hover);
-}
-
-.auth-shell__error {
-  margin-top: 12px;
-  color: var(--red);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 @keyframes marker-pop {

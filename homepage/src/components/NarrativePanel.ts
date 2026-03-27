@@ -88,12 +88,7 @@ export class NarrativePanel extends Panel {
     this.setCount(index + 1);
     this.pulse();
 
-    // Only auto-scroll if the user is already near the bottom
-    // so manual scroll-up isn't yanked back on every new step
-    const gap = this.content.scrollHeight - this.content.scrollTop - this.content.clientHeight;
-    if (gap < 120) {
-      this.content.scrollTop = this.content.scrollHeight;
-    }
+    this.content.scrollTop = this.content.scrollHeight;
   }
 
   private renderSources(sources: StepSource[]): HTMLElement {

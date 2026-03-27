@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@auth0/auth0-react": "^2.16.0",
     "@auth0/auth0-spa-js": "^2.18.2",
     "d3": "^7.9.0",
     "globe.gl": "^2.45.1",

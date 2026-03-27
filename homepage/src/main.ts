@@ -1,34 +1,46 @@
+import { h, render } from 'preact';
+import { Auth0Provider } from '@auth0/auth0-react';
 import { App } from './App';
-import { CommonsAuthClient } from './auth/auth-client';
+import { getAuth0Config, getAuth0ConfigError } from './auth/auth-config';
 import './styles.css';
 
 document.addEventListener('DOMContentLoaded', () => {
-  void bootstrap();
+  bootstrap();
 });
 
-async function bootstrap(): Promise<void> {
+function bootstrap(): void {
   const root = document.getElementById('app');
   if (!root) throw new Error('Missing #app root');
 
-  try {
-    const auth = await CommonsAuthClient.create();
-    const session = await auth.init();
-
-    if (!session.isAuthenticated) {
-      await auth.login();
-      return;
-    }
-
-    new App(root, auth, session);
-  } catch (error) {
+  const error = getAuth0ConfigError();
+  if (error) {
     root.innerHTML = `
       <div class="auth-shell">
         <div class="auth-shell__card">
           <h1>Auth Setup Needed</h1>
-          <p>${error instanceof Error ? error.message : 'Unable to initialize Auth0.'}</p>
-          <p>Set the values in <code>homepage/.env.example</code> and restart the app.</p>
+          <p>${error}</p>
+          <p>Set the Auth0 values in your Vite env file and restart the app.</p>
         </div>
       </div>
     `;
+    return;
   }
+
+  const config = getAuth0Config();
+
+  render(
+    h(
+      Auth0Provider,
+      {
+        domain: config.domain,
+        clientId: config.clientId,
+        authorizationParams: {
+          redirect_uri: config.redirectUri,
+          ...(config.audience ? { audience: config.audience } : {}),
+        },
+      },
+      h(App, {}),
+    ),
+    root,
+  );
 }

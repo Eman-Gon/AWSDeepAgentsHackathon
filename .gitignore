@@ -1,0 +1,14 @@
+# Data
+data/*.json
+data/*.db
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Environment
+.env

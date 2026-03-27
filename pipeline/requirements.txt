@@ -1,0 +1,6 @@
+airbyte>=0.2.0
+aerospike>=15.0.0
+pandas>=2.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+thefuzz[speedup]>=0.20.0  # fuzzy name matching (formerly fuzzywuzzy)

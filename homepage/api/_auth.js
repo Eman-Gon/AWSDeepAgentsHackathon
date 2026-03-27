@@ -54,9 +54,11 @@ export async function requirePrincipal(req, mode = 'human') {
       audience,
     });
 
-    const roles = getRoles(payload);
+    let roles = getRoles(payload);
     const scopes = getScopes(payload);
     const agent = isAgentToken(payload);
+    // Default: every authenticated human is at least a journalist
+    if (!agent && roles.length === 0) roles = ['journalist'];
     const principal = {
       sub: String(payload.sub || ''),
       roles,

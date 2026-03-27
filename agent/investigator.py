@@ -18,6 +18,21 @@ import re
 import time
 from typing import Any, Generator
 
+# Overmind SDK — auto-instruments google-genai for observability.
+# Traces every LLM call (latency, tokens, cost) to the Overmind dashboard.
+# Must be initialized BEFORE importing the genai client.
+try:
+    from overmind_sdk import init as _overmind_init, get_tracer as _overmind_tracer, set_tag as _overmind_tag
+
+    _overmind_init(
+        service_name="commons-investigation-agent",
+        environment=os.environ.get("OVERMIND_ENVIRONMENT", "development"),
+        providers=["google"],  # instrument google-genai calls
+    )
+    _OVERMIND_ENABLED = True
+except Exception:
+    _OVERMIND_ENABLED = False
+
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
@@ -259,6 +274,10 @@ def investigate(query: str, verbose: bool = False, max_turns: int = 15) -> str:
     Returns:
         The agent's final investigation briefing as a string.
     """
+    # Tag this investigation in Overmind for per-query observability
+    if _OVERMIND_ENABLED:
+        _overmind_tag("investigation.query", query[:200])
+
     # Create the Gemini client
     client = genai.Client(api_key=_API_KEY)
 

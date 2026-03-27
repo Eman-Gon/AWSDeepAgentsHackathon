@@ -24,7 +24,10 @@ function getRoles(user: Record<string, unknown> | undefined): UserRole[] {
   const config = getAuth0Config();
   const namespacedRoles = user[`${config.claimsNamespace}/roles`];
   const roles = Array.isArray(namespacedRoles) ? namespacedRoles : [];
-  return roles.filter((role): role is UserRole => role === 'journalist' || role === 'editor');
+  const filtered = roles.filter((role): role is UserRole => role === 'journalist' || role === 'editor');
+  // Default: every authenticated human is at least a journalist
+  if (filtered.length === 0) filtered.push('journalist');
+  return filtered;
 }
 
 function buildSession(user: Record<string, unknown> | undefined): AuthSession {

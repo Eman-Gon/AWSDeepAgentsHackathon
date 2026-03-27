@@ -20,13 +20,24 @@ Usage:
 
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-from agent.investigator import investigate_stream
+# ── LLM backend selection ───────────────────────────────────────────────
+# When TRUEFOUNDRY_BASE_URL is set, route LLM calls through TrueFoundry's
+# AI Gateway (OpenAI-compatible). Otherwise use the default Gemini backend.
+# Both backends expose the same investigate_stream() interface.
+_TF_BASE_URL = os.environ.get("TRUEFOUNDRY_BASE_URL", "")
+if _TF_BASE_URL:
+    from agent.truefoundry_backend import investigate_stream
+    _BACKEND_NAME = f"truefoundry ({_TF_BASE_URL})"
+else:
+    from agent.investigator import investigate_stream
+    _BACKEND_NAME = "gemini-flash"
 
 # ── CORS configuration ──────────────────────────────────────────────────
 # Allow requests from the Vite dev server and common deployment origins
@@ -91,7 +102,7 @@ class InvestigationHandler(BaseHTTPRequestHandler):
         Useful for load balancers, Vercel proxies, or just verifying
         the server is running before sending investigation requests.
         """
-        self._send_json({"status": "ok", "service": "commons-agent"})
+        self._send_json({"status": "ok", "service": "commons-agent", "llm_backend": _BACKEND_NAME})
 
     def _handle_investigate(self, parsed):
         """Stream an investigation as Server-Sent Events (SSE).
@@ -188,6 +199,7 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
     """
     server = HTTPServer((host, port), InvestigationHandler)
     print(f"[commons-agent] SSE server running at http://{host}:{port}")
+    print(f"[commons-agent] LLM backend: {_BACKEND_NAME}")
     print(f"[commons-agent] Investigation endpoint: http://{host}:{port}/api/investigate?q=<query>")
     print(f"[commons-agent] Health check: http://{host}:{port}/api/health")
     print(f"[commons-agent] Press Ctrl+C to stop")

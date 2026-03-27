@@ -401,6 +401,10 @@ def investigate_stream(
     Yields:
         AgentStep dicts, one per tool call + one final briefing
     """
+    # Tag this investigation in Overmind for per-query observability
+    if _OVERMIND_ENABLED:
+        _overmind_tag("investigation.query", query[:200])
+
     # Create the Gemini client
     client = genai.Client(api_key=_API_KEY)
 

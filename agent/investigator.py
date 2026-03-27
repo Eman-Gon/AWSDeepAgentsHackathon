@@ -50,6 +50,7 @@ from agent.graph_queries import (
     traverse_connections,
 )
 from agent.patterns import detect_patterns
+from agent.airbyte_enrichment import collect_airbyte_evidence, airbyte_enrichment_enabled
 from agent.step_emitter import emit_step, emit_final_briefing
 
 # ── Gemini client setup ───────────────────────────────────────────────────
@@ -465,6 +466,19 @@ def investigate_stream(
             step = emit_step(tool_name, tool_args, result_json)
             yield step
 
+            # Optionally enrich early entity matches with Airbyte evidence so the
+            # frontend can show cross-source context in the timeline.
+            if tool_name == "search_entity" and airbyte_enrichment_enabled():
+                entity_name = _top_search_result_name(result_json)
+                if entity_name:
+                    airbyte_result = collect_airbyte_evidence(entity_name, query)
+                    if airbyte_result is not None:
+                        yield emit_step(
+                            "airbyte_enrichment",
+                            {"entity_name": entity_name},
+                            json.dumps(airbyte_result),
+                        )
+
             # Collect the function response for the conversation
             function_responses.append(
                 types.Part.from_function_response(
@@ -513,3 +527,19 @@ def investigate_stream(
     except Exception:
         pass
     yield emit_final_briefing("Investigation reached maximum tool calls. Please refine your query.")
+
+
+def _top_search_result_name(result_json: str) -> str | None:
+    try:
+        parsed = json.loads(result_json)
+    except json.JSONDecodeError:
+        return None
+
+    if isinstance(parsed, list) and parsed:
+        top = parsed[0]
+        if isinstance(top, dict):
+            name = top.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+
+    return None

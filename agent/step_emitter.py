@@ -8,6 +8,7 @@ Each AgentStep contains:
   - nodes: optional list of GraphNode dicts for the graph/globe visualizations
   - edges: optional list of GraphEdge dicts for connections
   - patterns: optional list of PatternAlert dicts for findings panel
+  - sources: optional list of external evidence/source dicts for the timeline
   - delay: animation delay in ms (used by frontend to pace the narrative)
 
 The frontend expects:
@@ -379,7 +380,38 @@ def emit_final_briefing(text: str) -> dict:
         "nodes": [],
         "edges": [],
         "patterns": [],
+        "sources": [],
         "delay": 0,
+    }
+
+
+def emit_airbyte_enrichment(tool_args: dict, result: Any) -> dict:
+    """Convert optional Airbyte evidence into an AgentStep."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            result = {}
+
+    message = "Airbyte enrichment was requested."
+    sources = []
+    if isinstance(result, dict):
+        message = result.get("message", message)
+        raw_sources = result.get("sources", [])
+        if isinstance(raw_sources, list):
+            sources = [
+                source for source in raw_sources
+                if isinstance(source, dict)
+            ]
+
+    return {
+        "tool": "airbyte_enrichment",
+        "message": message,
+        "nodes": [],
+        "edges": [],
+        "patterns": [],
+        "sources": sources,
+        "delay": 700,
     }
 
 
@@ -391,6 +423,7 @@ STEP_EMITTERS = {
     "get_edges_for_entity": emit_edges,
     "detect_patterns": emit_patterns,
     "aggregate_query": emit_aggregate,
+    "airbyte_enrichment": emit_airbyte_enrichment,
 }
 
 
@@ -411,5 +444,6 @@ def emit_step(tool_name: str, tool_args: dict, result: Any) -> dict:
         "nodes": [],
         "edges": [],
         "patterns": [],
+        "sources": [],
         "delay": 500,
     }

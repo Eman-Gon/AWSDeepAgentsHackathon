@@ -2,7 +2,7 @@ import { Panel } from './Panel';
 import { h } from '@/utils/dom-utils';
 import { escapeHtml } from '@/utils/sanitize';
 import { TOOL_ICONS } from '@/config/constants';
-import type { AgentStep, InvestigationStatus } from '@/types';
+import type { AgentStep, InvestigationStatus, StepSource } from '@/types';
 
 export class NarrativePanel extends Panel {
   private listEl: HTMLElement;
@@ -78,6 +78,9 @@ export class NarrativePanel extends Panel {
     toolRow.appendChild(h('span', { className: 'timeline__tool-name' }, step.tool.replace(/_/g, ' ')));
     body.appendChild(toolRow);
     body.appendChild(h('p', { className: 'timeline__message' }, escapeHtml(step.message)));
+    if (step.sources && step.sources.length > 0) {
+      body.appendChild(this.renderSources(step.sources));
+    }
 
     entry.appendChild(dotCol);
     entry.appendChild(body);
@@ -91,6 +94,31 @@ export class NarrativePanel extends Panel {
     if (gap < 120) {
       this.content.scrollTop = this.content.scrollHeight;
     }
+  }
+
+  private renderSources(sources: StepSource[]): HTMLElement {
+    const wrap = h('div', { className: 'timeline__sources' });
+    wrap.appendChild(h('span', { className: 'timeline__sources-label' }, 'Evidence'));
+
+    for (const source of sources) {
+      const item = source.url
+        ? h('a', {
+          className: 'timeline__source',
+          href: source.url,
+          target: '_blank',
+          rel: 'noreferrer',
+        })
+        : h('div', { className: 'timeline__source' });
+
+      item.appendChild(h('span', { className: 'timeline__source-system' }, source.system));
+      item.appendChild(h('span', { className: 'timeline__source-label' }, source.label));
+      if (source.detail) {
+        item.appendChild(h('span', { className: 'timeline__source-detail' }, source.detail));
+      }
+      wrap.appendChild(item);
+    }
+
+    return wrap;
   }
 
   showTyping(): void {

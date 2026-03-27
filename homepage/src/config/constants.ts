@@ -24,6 +24,7 @@ export const TOOL_ICONS: Record<string, string> = {
   search_entity: '🔍',
   traverse_connections: '🔗',
   detect_patterns: '⚠️',
+  airbyte_enrichment: '🧩',
   check_prior_investigations: '📁',
   get_pattern_confidence: '📊',
   file_investigation: '📋',

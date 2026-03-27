@@ -26,11 +26,20 @@ export interface PatternAlert {
   confidence: number;
 }
 
+export interface StepSource {
+  label: string;
+  system: string;
+  kind?: string;
+  detail?: string;
+  url?: string;
+}
+
 export interface AgentStep {
   tool: string;
   message: string;
   nodes?: GraphNode[];
   edges?: GraphEdge[];
   patterns?: PatternAlert[];
+  sources?: StepSource[];
   delay: number;
 }

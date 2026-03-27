@@ -22,6 +22,18 @@ export const DEMO_INVESTIGATION: AgentStep[] = [
     delay: 1200,
   },
   {
+    tool: 'airbyte_enrichment',
+    message: 'Airbyte evidence layer checked connected external systems for fresh context on Recology SF.',
+    sources: [
+      {
+        system: 'Airbyte GitHub',
+        label: 'Issue references mentioning Recology',
+        detail: 'External connector step',
+      },
+    ],
+    delay: 900,
+  },
+  {
     tool: 'search_entity',
     message: 'Found: Recology SF — 12 city contracts totaling $3.8B since 2010. Primary department: SF Environment.',
     delay: 1800,

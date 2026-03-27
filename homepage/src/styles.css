@@ -550,6 +550,51 @@ html, body {
   line-height: 1.6;
 }
 
+.timeline__sources {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline__sources-label {
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-right: 2px;
+}
+
+.timeline__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  text-decoration: none;
+  min-height: 30px;
+}
+
+.timeline__source-system {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-hover);
+}
+
+.timeline__source-label {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.timeline__source-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Typing dots */
 .timeline__typing {
   display: flex;

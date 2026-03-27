@@ -1,4 +1,4 @@
-import{t as h7,Q as XE,J as f7}from"./index-Dtw68N50.js";/**
+import{t as h7,Q as XE,J as f7}from"./index-BDZ6TFFf.js";/**
  * @license
  * Copyright 2010-2026 Three.js Authors
  * SPDX-License-Identifier: MIT

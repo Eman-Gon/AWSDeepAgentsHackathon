@@ -232,6 +232,8 @@ class DashboardApp {
       } else {
         globeArea.style.display = 'none';
         graphArea.style.display = '';
+        // vis-network needs a redraw after becoming visible (it had 0x0 dims while hidden)
+        requestAnimationFrame(() => this.graphPanel.resize());
       }
     });
 

@@ -33,31 +33,123 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_graph.d
 INV_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "commons_investigations.db")
 
 # ── Turso cloud database config (production / Render) ─────────────────────
-# When TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set in the environment,
-# queries connect to the Turso cloud SQLite instead of the local file.
-# The libsql_experimental package uses an embedded-replica pattern:
-# it keeps a local cache at _TURSO_REPLICA and syncs with the remote on
-# each connection so queries run at SQLite speed over the local copy.
+# When TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set, queries use the Turso
+# HTTP API directly (no local replica sync — instant cold start).
 _TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
 _TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
-_TURSO_REPLICA = "/tmp/commons_graph_replica.db"  # local embedded replica cache
+
+
+class _TursoHTTPConn:
+    """
+    Minimal sqlite3.Connection-compatible wrapper for the Turso HTTP API.
+
+    Uses the Turso /v2/pipeline REST endpoint so we never need to
+    sync a local replica. Queries go directly to the cloud database,
+    which keeps cold-start time near zero on Render.
+    """
+
+    def __init__(self, url: str, token: str) -> None:
+        import requests  # type: ignore
+
+        # Convert libsql:// URL to HTTPS for the REST endpoint
+        self.base = url.replace("libsql://", "https://")
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        self._requests = requests
+        # row_factory attribute for compatibility with sqlite3-style code
+        self.row_factory = None
+
+    def execute(self, sql: str, params: tuple = ()):
+        """Execute a single SQL statement and return a cursor-like object."""
+        # Build the Turso-flavoured bound parameter list
+        args = [
+            {"type": "text", "value": str(v)} if not isinstance(v, (int, float))
+            else {"type": "integer" if isinstance(v, int) else "float", "value": v}
+            for v in params
+        ]
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": sql, "args": args}}
+            ]
+        }
+        for attempt in range(3):
+            try:
+                r = self._requests.post(
+                    f"{self.base}/v2/pipeline",
+                    json=payload,
+                    headers=self.headers,
+                    timeout=60,  # Turso full-table LIKE scans can take 10-30s
+                )
+                r.raise_for_status()
+                data = r.json()
+                result = data["results"][0]["response"]["result"]
+                cols = [c["name"] for c in result["cols"]]
+
+                # Convert Turso row format → sqlite3.Row-compatible namedtuples
+                rows = []
+                for raw_row in result["rows"]:
+                    vals = [cell.get("value") for cell in raw_row]
+                    rows.append(_TursoRow(cols, vals))
+                return _TursoFakeCursor(rows)
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(0.5)
+
+    def close(self):
+        pass  # Nothing to close for HTTP
+
+
+class _TursoRow:
+    """sqlite3.Row-compatible row that supports both index and key access."""
+
+    def __init__(self, cols, vals):
+        self._cols = cols
+        self._vals = vals
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return self._vals[self._cols.index(key)]
+
+    def keys(self):
+        return self._cols
+
+    def __iter__(self):
+        return iter(self._vals)
+
+
+class _TursoFakeCursor:
+    """Cursor-like wrapper returned by _TursoHTTPConn.execute()."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._idx = 0
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        if self._rows:
+            return self._rows[0]
+        return None
+
+    def __iter__(self):
+        return iter(self._rows)
 
 
 def _connect() -> sqlite3.Connection:
     """Open a connection to the graph DB.
 
     Priority:
-    1. Turso cloud (embedded replica) — when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set
+    1. Turso cloud HTTP API — when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set
     2. Local SQLite file — development fallback
     """
     if _TURSO_URL and _TURSO_TOKEN:
-        # Use the libsql_experimental embedded replica driver to connect to Turso
-        # This downloads a local copy and syncs it before every connection.
-        import libsql_experimental as libsql  # optional dep; installed in prod
-        conn = libsql.connect(_TURSO_REPLICA, sync_url=_TURSO_URL, auth_token=_TURSO_TOKEN)
-        conn.sync()                            # pull any new rows from the remote
-        conn.row_factory = sqlite3.Row         # dict-like column access
-        return conn
+        # Use HTTP API: no local replica sync, instant cold start
+        return _TursoHTTPConn(_TURSO_URL, _TURSO_TOKEN)  # type: ignore
     # Local development fallback: open the pre-seeded SQLite file read-only
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row          # dict-like access to columns
@@ -117,15 +209,42 @@ def search_entity(name: str, entity_type: Optional[str] = None, limit: int = 10)
     """
     conn = _connect()
     try:
-        # Build query — use LIKE for a coarse first pass, then re-rank by fuzz score
-        query = "SELECT * FROM entities WHERE name LIKE ?"
-        params: list = [f"%{name}%"]
+        # For Turso HTTP connections: use FTS5 virtual table for fast name lookup.
+        # For local SQLite: use LIKE which is fast on an in-process DB.
+        is_turso = isinstance(conn, _TursoHTTPConn)
 
-        if entity_type:
-            query += " AND type = ?"
-            params.append(entity_type)
+        if is_turso:
+            # FTS5 MATCH uses tokenized full-text search — much faster than LIKE on remote DB.
+            # Append '*' for prefix matching so "Recol" matches "Recology", etc.
+            fts_term = name.replace('"', '""')  # escape quotes in FTS5 MATCH syntax
+            if entity_type:
+                query = (
+                    "SELECT e.entity_id, e.type, e.name, e.aliases, e.properties, "
+                    "e.sources, e.first_seen, e.last_updated, e.flagged "
+                    "FROM entities e "
+                    "JOIN entities_fts fts ON fts.entity_id = e.entity_id "
+                    "WHERE fts.name MATCH ? AND e.type = ? LIMIT 100"
+                )
+                params: list = [f'"{fts_term}"*', entity_type]
+            else:
+                query = (
+                    "SELECT e.entity_id, e.type, e.name, e.aliases, e.properties, "
+                    "e.sources, e.first_seen, e.last_updated, e.flagged "
+                    "FROM entities e "
+                    "JOIN entities_fts fts ON fts.entity_id = e.entity_id "
+                    "WHERE fts.name MATCH ? LIMIT 100"
+                )
+                params = [f'"{fts_term}"*']
+        else:
+            # Local SQLite LIKE — instant on in-process DB
+            query = "SELECT * FROM entities WHERE name LIKE ?"
+            params = [f"%{name}%"]
 
-        query += " LIMIT 500"  # fetch a broad pool for fuzzy ranking
+            if entity_type:
+                query += " AND type = ?"
+                params.append(entity_type)
+
+            query += " LIMIT 100"
 
         rows = conn.execute(query, params).fetchall()
 

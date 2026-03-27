@@ -257,6 +257,18 @@ export class GraphPanel extends Panel {
     this.network?.stabilize(80);
   }
 
+  /** Call when the graph container becomes visible (e.g. tab switch).
+   *  vis-network can't measure a hidden container, so we must redraw. */
+  resize(): void {
+    if (!this.network) return;
+    this.network.redraw();
+    this.network.fit({
+      animation: false,
+      minZoomLevel: 0.45,
+      maxZoomLevel: 1.15,
+    });
+  }
+
   resetViewport(): void {
     this.userNavigated = false;
     this.fit(true);

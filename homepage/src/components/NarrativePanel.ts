@@ -1,6 +1,7 @@
 import { Panel } from './Panel';
 import { h } from '@/utils/dom-utils';
 import { escapeHtml } from '@/utils/sanitize';
+import { renderMarkdown } from '@/utils/markdown';
 import { TOOL_ICONS } from '@/config/constants';
 import type { AgentStep, InvestigationStatus, StepSource } from '@/types';
 
@@ -77,7 +78,22 @@ export class NarrativePanel extends Panel {
     toolRow.appendChild(h('span', { className: 'timeline__icon' }, icon));
     toolRow.appendChild(h('span', { className: 'timeline__tool-name' }, step.tool.replace(/_/g, ' ')));
     body.appendChild(toolRow);
-    body.appendChild(h('p', { className: 'timeline__message' }, escapeHtml(step.message)));
+
+    const isBriefing = step.tool === 'briefing' || step.tool === 'final_briefing';
+    if (isBriefing) {
+      // Render markdown for the final briefing
+      const briefingEl = h('div', { className: 'timeline__briefing' });
+      briefingEl.innerHTML = renderMarkdown(step.message);
+      body.appendChild(briefingEl);
+
+      // Add "Expand" button to open modal
+      const expandBtn = h('button', { className: 'timeline__expand-btn' }, 'View Full Briefing');
+      expandBtn.addEventListener('click', () => this.openBriefingModal(step.message));
+      body.appendChild(expandBtn);
+    } else {
+      body.appendChild(h('p', { className: 'timeline__message' }, escapeHtml(step.message)));
+    }
+
     if (step.sources && step.sources.length > 0) {
       body.appendChild(this.renderSources(step.sources));
     }
@@ -114,6 +130,40 @@ export class NarrativePanel extends Panel {
     }
 
     return wrap;
+  }
+
+  private openBriefingModal(markdown: string): void {
+    // Create modal overlay
+    const overlay = h('div', { className: 'briefing-modal__overlay' });
+    const modal = h('div', { className: 'briefing-modal' });
+
+    // Close button
+    const closeBtn = h('button', { className: 'briefing-modal__close' }, '\u00D7');
+    const close = () => overlay.remove();
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+
+    // Header
+    const header = h('div', { className: 'briefing-modal__header' });
+    header.appendChild(h('h2', {}, 'Investigation Briefing'));
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+
+    // Rendered markdown body
+    const body = h('div', { className: 'briefing-modal__body' });
+    body.innerHTML = renderMarkdown(markdown);
+    modal.appendChild(body);
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // Escape key closes
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
   }
 
   showTyping(): void {

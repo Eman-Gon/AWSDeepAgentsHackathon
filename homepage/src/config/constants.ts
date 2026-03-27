@@ -28,6 +28,8 @@ export const TOOL_ICONS: Record<string, string> = {
   check_prior_investigations: '📁',
   get_pattern_confidence: '📊',
   file_investigation: '📋',
+  briefing: '📄',
+  final_briefing: '📄',
 };
 
 export const SUGGESTIONS = [

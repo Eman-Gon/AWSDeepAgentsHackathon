@@ -2,51 +2,102 @@
 
 ## Integration Strategy
 
-Two options, ordered by speed:
+We use **PyAirbyte with a declarative manifest** to define a custom SODA API source that ingests all three SF datasets. This avoids building a full CDK connector while still giving us a reusable Airbyte source definition.
 
-### Option A: Airbyte Agent Connectors (faster, ~45 min)
+### Implementation (pipeline/soda_source.py)
 
 ```python
-# pip install airbyte-agent-connectors
-# Configure three SODA sources as agent tools
-# Agent calls them during investigation flow
+import airbyte as ab
+
+# Declarative manifest defines REST API source inline
+SODA_MANIFEST = {
+    "version": "6.44.0",
+    "type": "DeclarativeSource",
+    "definitions": {
+        "streams": {
+            "contracts": {
+                "type": "DeclarativeStream",
+                "name": "contracts",
+                "retriever": {
+                    "type": "SimpleRetriever",
+                    "requester": {
+                        "type": "HttpRequester",
+                        "url_base": "https://data.sfgov.org",
+                        "path": "/resource/cqi5-hm2d.json",
+                        "http_method": "GET",
+                        "request_parameters": {"$limit": "10000"},
+                    },
+                    "record_selector": {"type": "RecordSelector", "extractor": {"type": "DpathExtractor", "field_path": []}},
+                },
+                "schema_loader": {
+                    "type": "InlineSchemaLoader",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {"contract_no": {"type": "string"}, "prime_contractor": {"type": "string"}}
+                    }
+                }
+            },
+            # ... campaign_finance and businesses streams follow same pattern
+        }
+    },
+    "spec": {
+        "type": "Spec",
+        "connection_specification": {
+            "type": "object",
+            "properties": {"app_token": {"type": "string", "title": "SODA App Token", "default": ""}}
+        }
+    }
+}
+
+# Ingest via PyAirbyte
+source = ab.get_source("source-declarative-manifest", config={"__injected_declarative_manifest": SODA_MANIFEST})
+source.select_all_streams()
+result = source.read()  # Caches to DuckDB locally
+contracts_df = result["contracts"].to_pandas()
 ```
 
-- Install the airbyte-agent-connectors Python package
-- Expose SODA API as agent-callable tools
-- Agent triggers data pulls as part of investigation
+### Key Requirements for Declarative Manifests
 
-### Option B: Full Custom SODA Connector (deeper, ~2 hrs)
+1. **`spec` section is mandatory** — without it, PyAirbyte throws "Unable to find spec.yaml"
+2. **`InlineSchemaLoader` with `properties`** — without it, you get "KeyError: 'properties'"
+3. **`additionalProperties: true`** — lets SODA's variable schemas pass through
+4. **Source name must be `source-declarative-manifest`** — this is the PyAirbyte engine for custom manifests
 
-Build using Airbyte CDK (Connector Development Kit):
+### Fallback: Direct SODA API
 
-1. **Custom SODA API Source Connector** that speaks the Socrata/SODA protocol:
-   - Accepts a SODA endpoint URL + optional app token
-   - Supports SoQL filtering ($where, $limit, $offset)
-   - Handles pagination (SODA pages at 50,000 records)
-   - Outputs structured entity records (not raw JSON blobs)
-   - Implements incremental sync using date fields
+If Airbyte is blocked, use direct HTTP with pagination (also in soda_source.py):
 
-2. **Three source instances using the same connector:**
-   - SF Supplier Contracts (cqi5-hm2d)
-   - Campaign Finance Transactions (pitq-e56w)
-   - Registered Businesses (g8m3-pdis)
+```python
+def fetch_soda_dataset(resource_id, limit=50000):
+    """Fetch from SODA API with 10k pagination chunks."""
+    all_records = []
+    offset = 0
+    page_size = 10000
+    while offset < limit:
+        chunk = min(page_size, limit - offset)
+        url = f"https://data.sfgov.org/resource/{resource_id}.json?$limit={chunk}&$offset={offset}"
+        resp = requests.get(url, timeout=120)
+        batch = resp.json()
+        if not batch:
+            break
+        all_records.extend(batch)
+        offset += len(batch)
+    return all_records
+```
 
 ## Entity Extraction Transform
 
-Between Airbyte output and Aerospike input:
+Between Airbyte/SODA output and graph loading (pipeline/entity_extraction.py):
 
-1. Extract unique persons, companies, addresses from raw records
-2. Normalize names (fuzzy matching: "ACME LLC" = "Acme, LLC" = "ACME L.L.C.")
-3. Deduplicate entities across sources
-4. Output: entity nodes + relationship edges ready for graph ingestion
+1. Extract unique persons, companies, addresses, contracts, campaigns, departments
+2. Normalize names via `thefuzz` fuzzy matching ("ACME LLC" = "Acme, LLC")
+3. Deduplicate entities across all sources using stable MD5-based IDs
+4. Output: 186K+ entity nodes + 245K+ relationship edges
 
 ## Why This Matters for Judges
 
-- Most teams use a pre-built connector — we build a reusable SODA connector
-- SODA is used by NYC, Chicago, LA, Seattle — connector could ship to Airbyte's catalog
-- Pedro (Airbyte sponsor) specifically wants "projects that integrate data from multiple sources"
-
-## Fallback
-
-If Airbyte setup is blocked, use direct SODA API calls. The pipeline layer is important but not the only path to data.
+- Declarative manifest approach is reusable for any Socrata/SODA API dataset
+- SODA is used by NYC, Chicago, LA, Seattle — pattern could ship to Airbyte catalog
+- Pedro (Airbyte sponsor) wants "projects that integrate data from multiple sources"
+- We ingest 3 distinct datasets and cross-reference entities across them

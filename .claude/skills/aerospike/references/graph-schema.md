@@ -3,63 +3,62 @@
 ## Namespace & Sets
 
 ```
-Namespace: test (default in Community Edition Docker)
+Namespace: commons (configured in pipeline/config.py; falls back to SQLite at data/commons_graph.db)
 
 Sets:
-├── entities   — Graph nodes (people, companies, departments)
+├── entities   — Graph nodes (persons, companies, departments, contracts, campaigns, addresses)
 ├── edges      — Directed relationships between entities
-└── investigations — Saved investigation sessions
+└── investigations — Saved investigation sessions (Person 2 track)
 ```
 
 ## Entity Record Schema
 
 ```python
-# Key: ("test", "entities", entity_id)
-# entity_id format: "{type}_{normalized_name}" e.g. "person_jane_doe"
+# Key: ("commons", "entities", entity_id)
+# entity_id format: "{type}:{slug}_{md5hash8}" e.g. "person:jane_doe_a1b2c3d4"
 {
+    "entity_id": str,      # Same as the key — e.g. "person:jane_doe_a1b2c3d4"
+    "type": str,           # "person" | "company" | "department" | "contract" | "campaign" | "address"
     "name": str,           # Display name: "Jane Doe"
-    "type": str,           # "person" | "company" | "department"
-    "risk_score": float,   # 0.0 to 1.0, updated by pattern detection
-    "metadata": dict,      # Flexible metadata bag
-    # Type-specific fields:
-    # person: role, title, employer
-    # company: business_type, registration_id, address
-    # department: budget, head
+    "aliases": list,       # All name variants seen: ["Jane Doe", "JANE DOE"]
+    "properties": dict,    # Flexible metadata (contract_title, agreed_amt, address, etc.)
+    "sources": list,       # Which datasets contributed: ["contracts", "campaign_finance"]
+    "first_seen": str,     # ISO timestamp of first upsert
+    "last_updated": str,   # ISO timestamp of most recent upsert
+    "flagged_in_investigations": list,  # Investigation IDs that flagged this entity
 }
 ```
 
 ## Edge Record Schema
 
 ```python
-# Key: ("test", "edges", edge_id)
-# edge_id format: "{source}__{relation}__{target}"
+# Key: ("commons", "edges", edge_id)
+# edge_id format: "edge:{source_id}:{relationship_lower}:{target_id}"
 {
-    "source": str,         # entity_id of source node
-    "target": str,         # entity_id of target node
-    "relation": str,       # relationship type (see below)
-    "weight": int,         # relationship strength (contract count, donation amount, etc.)
-    "evidence": list,      # list of evidence dicts: [{"source": "contracts", "record_id": "..."}]
-    "first_seen": str,     # ISO date when first detected
-    "last_seen": str       # ISO date when last confirmed
+    "edge_id": str,            # Same as the key
+    "source_entity": str,      # entity_id of source node
+    "target_entity": str,      # entity_id of target node
+    "relationship": str,       # Relationship type (see below)
+    "properties": dict,        # Flexible metadata (amount, contract_no, etc.)
+    "source_dataset": str,     # "contracts" | "campaign_finance" | "businesses"
+    "confidence": float,       # 0.0 to 1.0 (1.0 = exact name match)
 }
 ```
 
-## Relation Types
+## Relationship Types
 
-| Relation | Source → Target | Example |
-|----------|----------------|---------|
-| `contracts_with` | department → company | DPW contracts with AcmeCorp |
-| `donates_to` | person/company → person | AcmeCorp donates to Mayor Smith |
-| `owns` | person → company | Jane Doe owns AcmeCorp |
-| `works_at` | person → department | Bob works at DPW |
-| `employed_by` | person → company | Jane employed by AcmeCorp |
-| `related_to` | person → person | Family/business relationship |
-| `subcontracts_to` | company → company | AcmeCorp subs to SmallCo |
+| Relationship | Source → Target | Count (~50k seed) | Example |
+|-------------|----------------|-------------------|---------|
+| `CONTRACTED_WITH` | company → contract | ~47,769 | AcmeCorp contracted with Contract#12345 |
+| `AWARDED_BY` | contract → department | ~47,714 | Contract#12345 awarded by DPW |
+| `DONATED_TO` | person → campaign | ~49,796 | Jane Doe donated to Committee XYZ |
+| `OFFICER_OF` | person → company | ~50,000 | Jane Doe officer of AcmeCorp |
+| `REGISTERED_AT` | company → address | ~50,000 | AcmeCorp registered at 123 Main St |
 
-## Investigation Record Schema
+## Investigation Record Schema (Person 2 track)
 
 ```python
-# Key: ("test", "investigations", investigation_id)
+# Key: ("commons", "investigations", investigation_id)
 {
     "title": str,          # "DPW Contract Concentration Analysis"
     "created_at": str,     # ISO timestamp
@@ -80,25 +79,21 @@ Create these at application startup:
 import aerospike
 
 def create_indexes(client):
-    """Create all secondary indexes needed for graph operations."""
-    ns = "test"
+    """Create all secondary indexes needed for graph queries."""
+    ns = "commons"
     indexes = [
         # Entity indexes
         ("entities", "type", "idx_entity_type", "string"),
         ("entities", "name", "idx_entity_name", "string"),
         # Edge indexes (critical for graph traversal)
-        ("edges", "source", "idx_edge_source", "string"),
-        ("edges", "target", "idx_edge_target", "string"),
-        ("edges", "relation", "idx_edge_relation", "string"),
-        ("edges", "weight", "idx_edge_weight", "integer"),
+        ("edges", "source_entity", "idx_edge_source", "string"),
+        ("edges", "target_entity", "idx_edge_target", "string"),
+        ("edges", "relationship", "idx_edge_relation", "string"),
     ]
 
     for set_name, bin_name, idx_name, idx_type in indexes:
         try:
-            if idx_type == "string":
-                client.index_string_create(ns, set_name, bin_name, idx_name)
-            else:
-                client.index_integer_create(ns, set_name, bin_name, idx_name)
+            client.index_string_create(ns, set_name, bin_name, idx_name)
             print(f"Created index: {idx_name}")
         except aerospike.exception.IndexFoundError:
             pass  # Already exists
@@ -106,44 +101,19 @@ def create_indexes(client):
 
 ## Sample Data Seeding
 
-```python
-def seed_sample_data(client):
-    """Seed the graph with sample SF government data for demo."""
-    ns = "test"
+Use the pipeline instead of manual seeding:
 
-    # Entities
-    entities = [
-        ("person_john_smith", {"name": "John Smith", "type": "person", "role": "Commissioner"}),
-        ("person_jane_doe", {"name": "Jane Doe", "type": "person", "role": "Lobbyist"}),
-        ("company_acme_consulting", {"name": "Acme Consulting", "type": "company", "business_type": "Consulting"}),
-        ("company_baybridge_llc", {"name": "BayBridge LLC", "type": "company", "business_type": "Construction"}),
-        ("dept_public_works", {"name": "Department of Public Works", "type": "department", "budget": 500000000}),
-        ("dept_planning", {"name": "Planning Department", "type": "department", "budget": 200000000}),
-    ]
+```bash
+# Download 50k records per dataset from SODA, save to data/
+python -m pipeline.run_pipeline --seed --limit 50000
 
-    for entity_id, bins in entities:
-        bins["risk_score"] = 0.0
-        client.put((ns, "entities", entity_id), bins)
+# Process pre-seeded data and load into SQLite (Aerospike fallback)
+python -m pipeline.run_pipeline --local --sqlite
 
-    # Edges
-    edges = [
-        ("dept_public_works", "company_acme_consulting", "contracts_with", 15),
-        ("dept_public_works", "company_baybridge_llc", "contracts_with", 3),
-        ("dept_planning", "company_acme_consulting", "contracts_with", 8),
-        ("company_acme_consulting", "person_john_smith", "donates_to", 50000),
-        ("person_jane_doe", "company_acme_consulting", "owns", 1),
-        ("person_jane_doe", "person_john_smith", "related_to", 1),
-    ]
-
-    for source, target, relation, weight in edges:
-        edge_id = f"{source}__{relation}__{target}"
-        client.put((ns, "edges", edge_id), {
-            "source": source,
-            "target": target,
-            "relation": relation,
-            "weight": weight,
-            "evidence": [{"source": "seed_data"}]
-        })
-
-    print(f"Seeded {len(entities)} entities and {len(edges)} edges")
+# Or process via PyAirbyte and load into SQLite
+python -m pipeline.run_pipeline --airbyte --sqlite
 ```
+
+Output stats from a 50k seed run:
+- 186,504 entities (58k persons, 53k companies, 43k addresses, 32k contracts, 294 campaigns, 56 departments)
+- 245,279 edges across 5 relationship types

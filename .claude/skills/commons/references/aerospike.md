@@ -9,13 +9,13 @@ Namespace: `commons`
 ```
 Key: entity_id (e.g., "person:john_doe_sf" or "company:acme_llc")
 Bins:
-  - type: string ("person" | "company" | "address" | "contract" | "campaign" | "donation")
+  - type: string ("person" | "company" | "department" | "contract" | "campaign" | "address")
   - name: string (canonical name)
   - aliases: list (all name variants seen across sources)
   - properties: map (source-specific fields — amount, date, department, etc.)
   - sources: list (which data sources contributed to this entity)
-  - first_seen: timestamp
-  - last_updated: timestamp
+  - first_seen: timestamp (ISO string)
+  - last_updated: timestamp (ISO string)
   - flagged_in_investigations: list (investigation IDs)
 ```
 
@@ -26,7 +26,7 @@ Key: edge_id (e.g., "edge:person_123:donated_to:campaign_456")
 Bins:
   - source_entity: string (entity_id)
   - target_entity: string (entity_id)
-  - relationship: string ("DONATED_TO" | "OFFICER_OF" | "AWARDED_BY" | "REGISTERED_AT" | "SHARES_ADDRESS" | "CONTRACTED_WITH")
+  - relationship: string ("CONTRACTED_WITH" | "AWARDED_BY" | "DONATED_TO" | "OFFICER_OF" | "REGISTERED_AT")
   - properties: map (amount, date, context)
   - source_dataset: string (which Airbyte source)
   - confidence: float (1.0 for exact match, lower for fuzzy)

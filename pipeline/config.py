@@ -13,20 +13,20 @@ SODA_DATASETS = {
     "contracts": {
         "resource_id": "cqi5-hm2d",
         "description": "SF Supplier Contracts",
-        "key_fields": ["contract_number"],
-        "date_field": "start_date",
+        "key_fields": ["contract_no"],
+        "date_field": "term_start_date",
     },
     "campaign_finance": {
         "resource_id": "pitq-e56w",
         "description": "Campaign Finance Transactions",
-        "key_fields": ["filer_id", "tran_naml", "tran_date"],
-        "date_field": "tran_date",
+        "key_fields": ["filer_nid", "transaction_last_name", "transaction_date"],
+        "date_field": "calculated_date",
     },
     "businesses": {
         "resource_id": "g8m3-pdis",
         "description": "Registered Businesses",
         "key_fields": ["dba_name", "ownership_name"],
-        "date_field": "business_start_date",
+        "date_field": "dba_start_date",
     },
 }
 

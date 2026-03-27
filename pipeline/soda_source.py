@@ -27,6 +27,23 @@ from pipeline.config import (
 SODA_MANIFEST = {
     "version": "0.1.0",
     "type": "DeclarativeSource",
+    "spec": {
+        "type": "Spec",
+        "documentation_url": "https://dev.socrata.com/foundry/data.sfgov.org/",
+        "connection_specification": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "app_token": {
+                    "type": "string",
+                    "title": "SODA App Token",
+                    "description": "Optional app token for higher rate limits",
+                    "default": "",
+                }
+            },
+            "required": [],
+        },
+    },
     "check": {"type": "CheckStream", "stream_names": ["contracts"]},
     "definitions": {
         "base_requester": {
@@ -52,6 +69,26 @@ SODA_MANIFEST = {
                     "extractor": {"type": "DpathExtractor", "field_path": []},
                 },
             },
+            "schema_loader": {
+                "type": "InlineSchemaLoader",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "contract_no": {"type": ["string", "null"]},
+                        "prime_contractor": {"type": ["string", "null"]},
+                        "project_team_supplier": {"type": ["string", "null"]},
+                        "agreed_amt": {"type": ["string", "null"]},
+                        "term_start_date": {"type": ["string", "null"]},
+                        "term_end_date": {"type": ["string", "null"]},
+                        "department": {"type": ["string", "null"]},
+                        "contract_title": {"type": ["string", "null"]},
+                        "contract_type": {"type": ["string", "null"]},
+                        "purchasing_authority": {"type": ["string", "null"]},
+                        "scope_of_work": {"type": ["string", "null"]},
+                    },
+                },
+            },
         },
         "campaign_finance_stream": {
             "type": "DeclarativeStream",
@@ -67,6 +104,27 @@ SODA_MANIFEST = {
                     "extractor": {"type": "DpathExtractor", "field_path": []},
                 },
             },
+            "schema_loader": {
+                "type": "InlineSchemaLoader",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "filer_nid": {"type": ["string", "null"]},
+                        "filer_name": {"type": ["string", "null"]},
+                        "transaction_last_name": {"type": ["string", "null"]},
+                        "transaction_first_name": {"type": ["string", "null"]},
+                        "transaction_amount_1": {"type": ["string", "null"]},
+                        "calculated_amount": {"type": ["string", "null"]},
+                        "transaction_date": {"type": ["string", "null"]},
+                        "calculated_date": {"type": ["string", "null"]},
+                        "transaction_employer": {"type": ["string", "null"]},
+                        "transaction_occupation": {"type": ["string", "null"]},
+                        "entity_code": {"type": ["string", "null"]},
+                        "transaction_city": {"type": ["string", "null"]},
+                    },
+                },
+            },
         },
         "businesses_stream": {
             "type": "DeclarativeStream",
@@ -80,6 +138,21 @@ SODA_MANIFEST = {
                 "record_selector": {
                     "type": "RecordSelector",
                     "extractor": {"type": "DpathExtractor", "field_path": []},
+                },
+            },
+            "schema_loader": {
+                "type": "InlineSchemaLoader",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "dba_name": {"type": ["string", "null"]},
+                        "ownership_name": {"type": ["string", "null"]},
+                        "business_start_date": {"type": ["string", "null"]},
+                        "location": {"type": ["string", "null"]},
+                        "business_corridor": {"type": ["string", "null"]},
+                        "naic_code": {"type": ["string", "null"]},
+                    },
                 },
             },
         },

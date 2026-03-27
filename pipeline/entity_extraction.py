@@ -124,11 +124,21 @@ class EntityStore:
 # ---------------------------------------------------------------------------
 
 def extract_from_contracts(records: list[dict], store: EntityStore) -> None:
-    """Extract entities and edges from SF Supplier Contracts."""
+    """Extract entities and edges from SF Supplier Contracts.
+
+    Actual SODA field names (cqi5-hm2d):
+      prime_contractor, project_team_supplier, contract_no, contract_title,
+      agreed_amt, department, contract_type, purchasing_authority,
+      term_start_date, term_end_date, scope_of_work
+    """
     for rec in records:
-        vendor = rec.get("supplier_name") or rec.get("vendor_name")
+        # Try multiple possible vendor field names
+        vendor = (rec.get("prime_contractor")
+                  or rec.get("project_team_supplier")
+                  or rec.get("supplier_name")
+                  or rec.get("vendor_name"))
         dept = rec.get("department")
-        contract_num = rec.get("contract_number", "unknown")
+        contract_num = rec.get("contract_no") or rec.get("contract_number", "unknown")
 
         if not vendor:
             continue
@@ -137,9 +147,9 @@ def extract_from_contracts(records: list[dict], store: EntityStore) -> None:
         vendor_id = store.upsert_entity(
             "company", vendor,
             properties={
-                "contract_amount": rec.get("contract_award_amount") or rec.get("contract_amount"),
-                "sole_source": rec.get("sole_source"),
-                "goods_services": rec.get("type_of_goods_and_services"),
+                "contract_amount": rec.get("agreed_amt"),
+                "contract_type": rec.get("contract_type"),
+                "purchasing_authority": rec.get("purchasing_authority"),
             },
             source="contracts",
         )
@@ -147,18 +157,20 @@ def extract_from_contracts(records: list[dict], store: EntityStore) -> None:
         contract_id = store.upsert_entity(
             "contract", f"Contract {contract_num}",
             properties={
-                "amount": rec.get("contract_award_amount") or rec.get("contract_amount"),
+                "amount": rec.get("agreed_amt"),
                 "title": rec.get("contract_title"),
                 "department": dept,
-                "start_date": rec.get("start_date") or rec.get("date"),
-                "sole_source": rec.get("sole_source"),
+                "start_date": rec.get("term_start_date"),
+                "end_date": rec.get("term_end_date"),
+                "scope": rec.get("scope_of_work"),
+                "contract_type": rec.get("contract_type"),
             },
             source="contracts",
         )
 
         # Edges
         store.add_edge(vendor_id, contract_id, "CONTRACTED_WITH",
-                       properties={"amount": rec.get("contract_award_amount") or rec.get("contract_amount")},
+                       properties={"amount": rec.get("agreed_amt")},
                        source_dataset="contracts")
 
         if dept:
@@ -169,11 +181,29 @@ def extract_from_contracts(records: list[dict], store: EntityStore) -> None:
 
 
 def extract_from_campaign_finance(records: list[dict], store: EntityStore) -> None:
-    """Extract entities and edges from Campaign Finance Transactions."""
+    """Extract entities and edges from Campaign Finance Transactions.
+
+    Actual SODA field names (pitq-e56w):
+      transaction_last_name, transaction_first_name, filer_name,
+      transaction_amount_1 / calculated_amount, transaction_date / calculated_date,
+      transaction_employer, transaction_occupation, transaction_city,
+      filer_nid, entity_code, form_type
+    """
     for rec in records:
-        contributor = rec.get("tran_naml")
-        committee = rec.get("filer_naml")
-        amount = rec.get("tran_amt1")
+        # Build contributor name from first + last, or fall back to last only
+        last_name = rec.get("transaction_last_name") or rec.get("tran_naml")
+        first_name = rec.get("transaction_first_name") or rec.get("tran_namf", "")
+        if last_name and first_name:
+            contributor = f"{first_name} {last_name}".strip()
+        elif last_name:
+            contributor = last_name
+        else:
+            contributor = None
+
+        committee = rec.get("filer_name") or rec.get("filer_naml")
+        amount = (rec.get("transaction_amount_1")
+                  or rec.get("calculated_amount")
+                  or rec.get("tran_amt1"))
 
         if not contributor or not committee:
             continue
@@ -182,22 +212,25 @@ def extract_from_campaign_finance(records: list[dict], store: EntityStore) -> No
         person_id = store.upsert_entity(
             "person", contributor,
             properties={
-                "employer": rec.get("tran_emp"),
-                "occupation": rec.get("tran_occ"),
-                "city": rec.get("tran_city"),
+                "employer": rec.get("transaction_employer") or rec.get("tran_emp"),
+                "occupation": rec.get("transaction_occupation") or rec.get("tran_occ"),
+                "city": rec.get("transaction_city") or rec.get("tran_city"),
             },
             source="campaign_finance",
         )
 
         campaign_id = store.upsert_entity(
             "campaign", committee,
-            properties={"filer_id": rec.get("filer_id")},
+            properties={"filer_id": rec.get("filer_nid") or rec.get("filer_id")},
             source="campaign_finance",
         )
 
         # Edge
         store.add_edge(person_id, campaign_id, "DONATED_TO",
-                       properties={"amount": amount, "date": rec.get("tran_date")},
+                       properties={
+                           "amount": amount,
+                           "date": rec.get("transaction_date") or rec.get("calculated_date"),
+                       },
                        source_dataset="campaign_finance")
 
 

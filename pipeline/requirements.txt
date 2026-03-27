@@ -4,3 +4,6 @@ pandas>=2.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 thefuzz[speedup]>=0.20.0  # fuzzy name matching (formerly fuzzywuzzy)
+google-genai>=1.68.0      # Gemini SDK with function calling
+openai>=1.0.0             # OpenAI SDK for TrueFoundry AI Gateway
+overmind-sdk>=0.1.35      # Overmind observability (auto-instruments LLM calls)

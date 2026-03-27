@@ -177,7 +177,6 @@ export class GraphPanel extends Panel {
     }
     this.updateStats();
     this.applyTreeLevels();
-    this.fit();
   }
 
   addEdges(edges: GraphEdge[]): void {
@@ -193,7 +192,6 @@ export class GraphPanel extends Panel {
     }
     this.applyTreeLevels();
     this.updateStats();
-    this.fit();
   }
 
   clear(): void {
@@ -210,7 +208,11 @@ export class GraphPanel extends Panel {
 
   private fit(force = false): void {
     if (!this.network) return;
-    if (!force && this.userNavigated) return;
+    // Only auto-fit once (the first batch) — repeated fit animations
+    // during streaming look jarring. After the first fit, only fit
+    // if explicitly forced (e.g., after stabilization) or userNavigated is false
+    // and we haven't auto-fit yet.
+    if (!force && (this.userNavigated || this.hasAutoFit)) return;
 
     this.network.fit({
       animation: { duration: 500, easingFunction: 'easeInOutQuad' },

@@ -177,7 +177,6 @@ export class GraphPanel extends Panel {
     }
     this.updateStats();
     this.applyTreeLevels();
-    this.fit();
   }
 
   addEdges(edges: GraphEdge[]): void {
@@ -193,7 +192,6 @@ export class GraphPanel extends Panel {
     }
     this.applyTreeLevels();
     this.updateStats();
-    this.fit();
   }
 
   clear(): void {

@@ -366,6 +366,7 @@ html, body {
 
 .right-section--timeline {
   flex: 1;
+  overflow: hidden;
   border-bottom: 1px solid var(--border-subtle);
 }
 

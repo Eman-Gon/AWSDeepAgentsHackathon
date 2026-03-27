@@ -9,11 +9,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <script type="module" crossorigin src="/assets/index-BDZ6TFFf.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-D89Z3-Gu.css">
+  <script type="module" crossorigin src="/assets/index--1-9gV2K.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-B2X6ObWk.css">
 </head>
 <body>
   <div id="app"></div>
+
 
   <!-- Bland AI Tip Line Widget -->
   <script>
@@ -23,6 +24,7 @@
   </script>
   <script src="https://widget.bland.ai/loader.js" defer></script>
 
+  <!-- Fallback: custom green "Call Tip Line" FAB if Bland widget doesn't load -->
   <style>
     .tipline-fab {
       position: fixed;
@@ -50,26 +52,37 @@
       transform: scale(1.05);
       box-shadow: 0 6px 28px rgba(34, 197, 94, 0.5);
     }
-    .tipline-fab__icon { font-size: 18px; }
+    .tipline-fab__icon {
+      font-size: 18px;
+    }
     @keyframes fab-pulse {
       0%, 100% { box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4); }
       50% { box-shadow: 0 4px 28px rgba(34, 197, 94, 0.6); }
     }
   </style>
   <script>
+    // Wait for Bland widget — if it loads, hide our FAB. If not, FAB stays.
     document.addEventListener('DOMContentLoaded', function() {
       var fab = document.getElementById('tipline-fab');
+      // Check after 3s if Bland widget loaded
       setTimeout(function() {
         var blandWidget = document.querySelector('[data-bland-widget]') ||
                           document.querySelector('iframe[src*="bland"]') ||
                           document.querySelector('.bland-widget');
-        if (blandWidget) fab.style.display = 'none';
+        if (blandWidget) {
+          // Bland loaded — style it green
+          fab.style.display = 'none';
+        }
       }, 3000);
+
       fab.addEventListener('click', function() {
+        // Try to open Bland widget if it exists
         var blandBtn = document.querySelector('[data-bland-widget]') ||
                        document.querySelector('.bland-widget button');
-        if (blandBtn) blandBtn.click();
-        else {
+        if (blandBtn) {
+          blandBtn.click();
+        } else {
+          // Fallback: scroll to tip line tab
           var tipsTab = document.querySelector('[data-tab="tips"]');
           if (tipsTab) tipsTab.click();
         }

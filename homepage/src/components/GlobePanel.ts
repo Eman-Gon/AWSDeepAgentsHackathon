@@ -89,6 +89,7 @@ export class GlobePanel extends Panel {
   private globe: any = null;
   private markers: GlobeMarker[] = [];
   private arcs: GlobeArc[] = [];
+  private renderedMarkerIds = new Set<string>();
   private statsEl: HTMLElement;
   private initialized = false;
 
@@ -217,6 +218,9 @@ export class GlobePanel extends Panel {
   }
 
   private buildMarker(d: GlobeMarker): HTMLElement {
+    const isNew = !this.renderedMarkerIds.has(d.id);
+    this.renderedMarkerIds.add(d.id);
+
     const el = document.createElement('div');
     el.className = 'globe-marker';
     el.style.width = `${d.size}px`;
@@ -226,7 +230,8 @@ export class GlobePanel extends Panel {
     el.style.border = '2px solid rgba(255,255,255,0.6)';
     el.style.cursor = 'pointer';
     el.style.transition = 'transform 0.3s ease';
-    el.style.animation = 'marker-pop 0.4s ease-out';
+    // Only animate the pop for newly added markers
+    if (isNew) el.style.animation = 'marker-pop 0.4s ease-out';
     el.title = d.label;
 
     // Pulse ring for critical entities
@@ -331,6 +336,7 @@ export class GlobePanel extends Panel {
   clear(): void {
     this.markers = [];
     this.arcs = [];
+    this.renderedMarkerIds.clear();
     if (this.globe) {
       this.globe.htmlElementsData([]);
       this.globe.arcsData([]);

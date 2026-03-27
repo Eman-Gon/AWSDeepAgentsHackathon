@@ -22,5 +22,63 @@
     };
   </script>
   <script src="https://widget.bland.ai/loader.js" defer></script>
+
+  <style>
+    .tipline-fab {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #22c55e;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      padding: 14px 22px;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: 'Inter', system-ui, sans-serif;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+      transition: all 0.2s;
+      animation: fab-pulse 2s ease-in-out infinite;
+    }
+    .tipline-fab:hover {
+      background: #16a34a;
+      transform: scale(1.05);
+      box-shadow: 0 6px 28px rgba(34, 197, 94, 0.5);
+    }
+    .tipline-fab__icon { font-size: 18px; }
+    @keyframes fab-pulse {
+      0%, 100% { box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4); }
+      50% { box-shadow: 0 4px 28px rgba(34, 197, 94, 0.6); }
+    }
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var fab = document.getElementById('tipline-fab');
+      setTimeout(function() {
+        var blandWidget = document.querySelector('[data-bland-widget]') ||
+                          document.querySelector('iframe[src*="bland"]') ||
+                          document.querySelector('.bland-widget');
+        if (blandWidget) fab.style.display = 'none';
+      }, 3000);
+      fab.addEventListener('click', function() {
+        var blandBtn = document.querySelector('[data-bland-widget]') ||
+                       document.querySelector('.bland-widget button');
+        if (blandBtn) blandBtn.click();
+        else {
+          var tipsTab = document.querySelector('[data-tab="tips"]');
+          if (tipsTab) tipsTab.click();
+        }
+      });
+    });
+  </script>
+  <button id="tipline-fab" class="tipline-fab">
+    <span class="tipline-fab__icon">📞</span>
+    <span>Call Tip Line</span>
+  </button>
 </body>
 </html>

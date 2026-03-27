@@ -185,6 +185,24 @@ class InvestigationHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Max-Age", "86400")  # cache preflight for 24h
         self.end_headers()
 
+    def do_HEAD(self):
+        """Handle HEAD requests (used by Render health checks).
+
+        Returns the same headers as GET but with no response body.
+        """
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path in ("", "/", "/api/health"):
+            origin = self.headers.get("Origin")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", _cors_origin(origin))
+            self.end_headers()
+        else:
+            self.send_response(200)
+            self.end_headers()
+
     def do_GET(self):
         """Route GET requests to the appropriate handler.
 

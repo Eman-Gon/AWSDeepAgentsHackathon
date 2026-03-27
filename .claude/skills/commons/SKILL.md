@@ -1,85 +1,110 @@
 ---
 name: commons
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Build and develop the Commons investigative intelligence platform — an agentic system that ingests SF government public records (contracts, campaign finance, business registrations) via Airbyte, stores them in an Aerospike knowledge graph, and deploys AI agents to autonomously detect corruption patterns. Use when implementing any part of the Commons platform including data pipeline (Airbyte/SODA), knowledge graph (Aerospike), investigation agent, Auth0 trust architecture, frontend (Next.js + graph viz), or stretch integrations (Overmind, TrueFoundry, Kiro). Triggers on work related to the Deep Agents Hackathon, SF government data analysis, entity graph traversal, corruption pattern detection, or journalist investigation tools.
 ---
 
-# Commons
+# Commons — Shared Investigation Intelligence Platform
 
-## Overview
+An agentic investigation platform that ingests public records, builds a real-time entity knowledge graph, and deploys AI agents that autonomously detect corruption patterns.
 
-[TODO: 1-2 sentences explaining what this skill enables]
+**Core thesis:** Every investigation enriches the graph. After 1,000 investigations, the graph is nearly impossible to replicate.
 
-## Structuring This Skill
+## Architecture
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+```
+AIRBYTE (Ingestion) → AEROSPIKE (Knowledge Graph) ↔ INVESTIGATION AGENT (LLM + Tools)
+                                                      ↓
+                                                   OVERMIND (Pattern Learning)
+AUTH0 (Journalist Login | M2M Agent Tokens | Anonymous Tips)
+FRONTEND (Search Bar | Agent Narrative | Graph Viz | Pattern Feed)
+```
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" → "Reading" → "Creating" → "Editing"
-- Structure: ## Overview → ## Workflow Decision Tree → ## Step 1 → ## Step 2...
+## Development Tracks
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" → "Merge PDFs" → "Split PDFs" → "Extract Text"
-- Structure: ## Overview → ## Quick Start → ## Task Category 1 → ## Task Category 2...
+Building Commons involves these parallel tracks. Read the corresponding reference file before starting work on any track.
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" → "Colors" → "Typography" → "Features"
-- Structure: ## Overview → ## Guidelines → ## Specifications → ## Usage...
+### Track 1: Data Pipeline (Airbyte + SODA API)
+→ Read `references/data-sources.md` for endpoints and fields
+→ Read `references/airbyte.md` for integration options
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" → numbered capability list
-- Structure: ## Overview → ## Core Capabilities → ### 1. Feature → ### 2. Feature...
+Steps:
+1. Set up Airbyte (Cloud or Docker) and register SODA app token
+2. Configure 3 SODA sources (contracts, campaign finance, businesses)
+3. Build entity extraction transform (normalize names, deduplicate)
+4. Connect output to Aerospike loader script
+5. Pre-seed data by downloading JSON directly (do NOT rely solely on live ingestion for demo)
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+### Track 2: Knowledge Graph (Aerospike)
+→ Read `references/aerospike.md` for schema, traversal, and pattern detection code
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+Steps:
+1. Set up Aerospike (Docker or Cloud), create namespace/sets/secondary indexes
+2. Implement `traverse_graph()` — BFS, N-hop traversal using secondary indexes
+3. Implement `detect_patterns()` — corruption pattern checks (recently-formed LLC, donation-to-awarding-official, shared addresses)
+4. Build investigation storage (create, update, outcome tracking)
+5. Expose all as Python API for agent tool calls
 
-## [TODO: Replace with the first main section based on chosen structure]
+### Track 3: Investigation Agent
+→ Read `references/agent.md` for system prompt, tools, and demo flow
 
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
+Steps:
+1. Scaffold agent with tool-calling (pydantic-ai, langchain, or raw Claude API)
+2. Define 8 tool interfaces (search_entity, traverse_connections, detect_patterns, etc.)
+3. Wire tools to Aerospike API
+4. Implement streaming output (WebSocket/SSE)
+5. Test full investigation flow end-to-end
 
-## Resources
+### Track 4: Auth0 Trust Architecture
+→ Read `references/auth0.md` for all 3 auth flows
 
-This skill includes example resource directories that demonstrate how to organize different types of bundled resources:
+Steps:
+1. Set up Auth0 tenant with roles (journalist, editor, newsroom_admin, public_reader)
+2. Implement journalist login (RBAC with custom claims)
+3. Implement M2M client credentials for agent (scoped: read data, write findings, NO publish)
+4. Implement anonymous tip submission (one-time retrieval token, no identity stored)
+5. Wire into frontend (protect routes) and agent (M2M token in headers)
 
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
+### Track 5: Frontend
+→ Read `references/frontend.md` for panel design and tech choices
 
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
+Steps:
+1. Scaffold Next.js + React app
+2. Build search bar → agent narrative panel (streaming) → graph viz (vis.js)
+3. **Graph visualization is the demo** — animate node discovery, color by entity type, label edges
+4. Build with mock auth first, wire Auth0 last
+5. Stream agent output in real-time showing tool calls
 
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
+### Stretch Integrations
+→ Read `references/stretch-sponsors.md` for Overmind, TrueFoundry, Kiro
 
-**Note:** Scripts may be executed without loading into context, but can still be read by Claude for patching or environment adjustments.
+Cut order (if time-crunched): TrueFoundry → Overmind → Kiro
 
-### references/
-Documentation and reference material intended to be loaded into context to inform Claude's process and thinking.
+## Tech Stack
 
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
+| Layer | Technology |
+|---|---|
+| Agent | Python (pydantic-ai / langchain / raw Claude API) |
+| Graph DB | Aerospike (`aerospike` Python client) |
+| Ingestion | Airbyte + custom SODA connector |
+| Auth | Auth0 (Universal Login + M2M + Actions) |
+| LLM | Claude Sonnet 4 or GPT-4o |
+| Frontend | Next.js + React + vis.js |
+| Deployment | Vercel (frontend) + fly.io or Railway (backend) |
 
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Claude should reference while working.
+## Judging Alignment (20% each)
 
-### assets/
-Files not intended to be loaded into context, but rather used within the output Claude produces.
+1. **Autonomy** — Agent acts on real-time data, zero human intervention post-query
+2. **Idea** — Government accountability using real SF data (judges are in SF)
+3. **Technical** — Multi-source pipeline → knowledge graph → multi-step agent reasoning
+4. **Tool Use** — Deep Airbyte + Aerospike + Auth0 integration (not surface level)
+5. **Presentation** — Live demo with dramatic graph visualization
 
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
+## Critical Rules
 
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Any unneeded directories can be deleted.** Not every skill requires all three types of resources.
+- Pre-seed data for demo reliability (see `references/demo.md`)
+- Graph viz is priority 1 for frontend
+- Use Aerospike secondary indexes for graph traversal (not just key-value)
+- Build real SODA connector for Airbyte (not just a generic REST connector)
+- Implement 3 distinct Auth0 flows (not just a login button)
+- SQLite fallback if Aerospike setup is blocked
+- Demo script and task assignments in `references/demo.md` and `references/tasks.md`

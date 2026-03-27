@@ -663,17 +663,22 @@ class InvestigationHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data: dict, status: int = 200):
         """Send a JSON response with CORS headers.
-        
+
         Used for non-streaming responses like health checks and errors.
+        Catches BrokenPipeError to prevent noisy tracebacks when the
+        client (or Render's health check probe) disconnects early.
         """
-        origin = self.headers.get("Origin")
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", _cors_origin(origin))
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            origin = self.headers.get("Origin")
+            body = json.dumps(data).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", _cors_origin(origin))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected before we finished writing — normal
 
     def log_message(self, format, *args):
         """Override default logging to add a prefix for clarity."""

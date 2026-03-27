@@ -2,6 +2,11 @@
 data/*.json
 data/*.db
 .cache/
+# SQLite WAL/SHM sidecar files (any location)
+*-shm
+*-wal
+*-info
+commons-graph
 
 # Python
 __pycache__/
